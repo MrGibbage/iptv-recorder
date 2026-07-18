@@ -122,7 +122,7 @@ Open question this raises: **how does a request indicate which configured provid
 - **Remux vs raw store:** confirm remux-on-record is the right call vs. storing raw TS as-is.
 - **Retention policy shape:** per-recording TTL? Total storage cap with LRU eviction? Per-channel rules?
 - **Provider delete cascade:** does `DELETE /providers/{id}` block if there are future scheduled recordings against it, or cascade-cancel them?
-- **API key issuance/rotation:** manual admin action only, or self-service rotation per client?
+- **API key rotation:** `POST /clients` issuance is decided as admin-initiated only (no self-registration endpoint from the client side — same passive-downloader relationship as SABnzbd/Sonarr: the recorder never reaches out to or "discovers" a scheduler, it just issues a key that gets pasted into whatever client's config). Rotation flow specifically (revoke + reissue vs. in-place key refresh) still TBD.
 - **Conflict handling:** what happens when two scheduled recordings overlap on the *same channel*? (Concurrent-stream limit across different channels is now decided — hard rejection at request time.)
 - **Rejection UX:** when a request is rejected for exceeding concurrent-stream limits, what does the client see — just a 4xx with a reason, or does the recorder suggest alternatives (e.g. next available slot)?
 - **Credential storage security:** provider credentials at rest need to be encrypted/secured on disk, not plaintext config — mirrors the same concern Lao's own docs raise about not writing credentials to disk in logs.
