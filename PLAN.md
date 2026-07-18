@@ -67,6 +67,15 @@ iptv-recorder API  ──schedules──▶  recording worker  ──writes─�
 - **Storage** — plain files on disk; retention policy prunes old recordings per config.
 - **Config/admin surface** — a backend settings page covering: one or more IPTV provider configs (name, Xtream URL, credentials), storage location(s), retention policy, other operational options.
 
+## Secrets Handling
+
+This repo is **public**. That constrains how provider credentials, API keys, and any other secret are handled, on top of the at-rest storage question below:
+
+- No real credentials, API keys, tokens, or `.env` files with live values are ever committed. Config with real values lives outside the repo (or in a git-ignored file); only a `.env.example`/template with placeholder values is tracked.
+- `.gitignore` must cover the real config/secrets file(s) from day one of actual implementation, not added after the fact.
+- Real credentials, API keys, or tokens for this project should not be pasted into Claude chat sessions either — describe config by shape/placeholder when asking for help, not by real value. Chat history isn't the right place for secrets any more than the repo is.
+- This is separate from the encryption-at-rest question in Credentials Model below — that's about how the *running service* stores what it's holding; this is about what never enters version control or conversation history in the first place.
+
 ## Credentials Model
 
 Decided: the service **does** store IPTV provider credentials server-side, configured through a settings page. One or more providers can be added; each gets a `provider_id`. This solves the scheduled-recording problem from the earlier draft — the service can trigger a recording on schedule without Lao needing to be open or reachable at that moment.
@@ -126,5 +135,6 @@ Open question this raises: **how does a request indicate which configured provid
 - [ ] **TODO2:** Decide remux vs raw storage format.
 - [ ] **TODO2:** Decide how stored provider credentials are secured at rest.
 - [ ] **TODO2:** Decide provider-delete cascade behavior and API key issuance/rotation flow.
+- [ ] **TODO1:** Add `.gitignore` for real config/secrets + a placeholder `.env.example` before any real config file is created.
 - [ ] **TODO3:** Design exact request/response schemas and error shapes for the drafted endpoints.
 - [ ] **TODO3:** Design retention policy config (TTL vs cap vs per-channel rules).
