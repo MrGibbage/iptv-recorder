@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
-import type { Provider } from "../api/types";
+import type { AuthCheckResult, Provider } from "../api/types";
 
 interface ProviderFormValues {
   name: string;
@@ -21,10 +21,19 @@ const emptyForm: ProviderFormValues = {
   enabled: true,
 };
 
+type TestStatus = "untested" | "testing" | "passed" | "failed";
+
 // Shared by "add provider" and "edit provider" — on edit, username/password
 // are left blank and only sent if the admin actually types a new value
 // (the API never returns credentials to redisplay, so there's nothing to
 // prefill and blank must mean "leave unchanged", not "clear it").
+//
+// The Test button + save-gating only apply when adding: on add there are no
+// stored credentials yet, so testing what's in the form is the only way to
+// catch a bad Xtream URL/username/password before creating the provider. On
+// edit the stored credentials are already known-good (or the admin isn't
+// touching them at all — blank means "keep current"), and GET
+// /providers/{id}/status already covers re-checking a saved provider live.
 function ProviderForm({
   initial,
   isEdit,
@@ -39,6 +48,34 @@ function ProviderForm({
   const [values, setValues] = useState(initial);
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [testStatus, setTestStatus] = useState<TestStatus>("untested");
+  const [testMessage, setTestMessage] = useState<string>();
+
+  // Any credential-relevant edit invalidates a prior "passed" result — a
+  // stale pass shouldn't gate Save open for URL/username/password the admin
+  // has since changed.
+  function updateCredential(patch: Partial<ProviderFormValues>) {
+    setValues({ ...values, ...patch });
+    setTestStatus("untested");
+    setTestMessage(undefined);
+  }
+
+  async function handleTest() {
+    setTestStatus("testing");
+    setTestMessage(undefined);
+    try {
+      const result = await api.post<AuthCheckResult>("/providers/test", {
+        baseUrl: values.baseUrl,
+        username: values.username,
+        password: values.password,
+      });
+      setTestStatus(result.ok ? "passed" : "failed");
+      setTestMessage(result.ok ? undefined : result.error);
+    } catch (err) {
+      setTestStatus("failed");
+      setTestMessage(err instanceof ApiError ? err.message : String(err));
+    }
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -53,6 +90,9 @@ function ProviderForm({
     }
   }
 
+  const canTest = values.baseUrl.trim() !== "" && values.username.trim() !== "" && values.password.trim() !== "";
+  const saveBlockedByTest = !isEdit && testStatus !== "passed";
+
   return (
     <form onSubmit={handleSubmit} className="form">
       <label>
@@ -63,21 +103,21 @@ function ProviderForm({
         Xtream base URL
         <input
           value={values.baseUrl}
-          onChange={(e) => setValues({ ...values, baseUrl: e.target.value })}
+          onChange={(e) => updateCredential({ baseUrl: e.target.value })}
           placeholder="http://provider.example.com:8080"
           required
         />
       </label>
       <label>
         Username{isEdit && " (leave blank to keep current)"}
-        <input value={values.username} onChange={(e) => setValues({ ...values, username: e.target.value })} />
+        <input value={values.username} onChange={(e) => updateCredential({ username: e.target.value })} />
       </label>
       <label>
         Password{isEdit && " (leave blank to keep current)"}
         <input
           type="password"
           value={values.password}
-          onChange={(e) => setValues({ ...values, password: e.target.value })}
+          onChange={(e) => updateCredential({ password: e.target.value })}
         />
       </label>
       <label>
@@ -98,9 +138,18 @@ function ProviderForm({
         />
         Enabled
       </label>
+      {!isEdit && (
+        <div className="provider-test">
+          <button type="button" onClick={handleTest} disabled={!canTest || testStatus === "testing"}>
+            {testStatus === "testing" ? "Testing…" : "Test"}
+          </button>
+          {testStatus === "passed" && <span className="test-result test-result-ok">✓ Connected</span>}
+          {testStatus === "failed" && <span className="test-result test-result-fail">✗ {testMessage}</span>}
+        </div>
+      )}
       {error && <p className="error">{error}</p>}
       <div className="form-actions">
-        <button type="submit" disabled={saving}>
+        <button type="submit" disabled={saving || saveBlockedByTest} title={saveBlockedByTest ? "Test the connection before saving" : undefined}>
           {saving ? "Saving…" : "Save"}
         </button>
         <button type="button" onClick={onCancel} disabled={saving}>

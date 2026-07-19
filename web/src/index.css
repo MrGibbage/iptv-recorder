@@ -306,3 +306,21 @@ button:disabled {
   background: rgba(107, 114, 128, 0.15);
   color: var(--text);
 }
+
+.provider-test {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.test-result {
+  font-size: 14px;
+}
+
+.test-result-ok {
+  color: #16a34a;
+}
+
+.test-result-fail {
+  color: var(--danger);
+}

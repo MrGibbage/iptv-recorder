@@ -53,3 +53,9 @@ export interface RetentionConfig {
   ttlDays: number | null;
   updatedAt: string;
 }
+
+export interface AuthCheckResult {
+  ok: boolean;
+  error?: string;
+  checkedAt: string;
+}

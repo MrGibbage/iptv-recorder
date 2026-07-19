@@ -5,7 +5,7 @@ import { db } from "../db/client.js";
 import { providers, recordings } from "../db/schema.js";
 import { encrypt } from "../crypto.js";
 import { requireApiKey } from "../auth.js";
-import { checkProviderAuth } from "../worker/xtreamAuth.js";
+import { checkProviderAuth, checkXtreamAuth } from "../worker/xtreamAuth.js";
 
 const createBodySchema = {
   type: "object",
@@ -46,6 +46,23 @@ type CreateBody = {
 
 type UpdateBody = Partial<CreateBody>;
 
+const testBodySchema = {
+  type: "object",
+  required: ["baseUrl", "username", "password"],
+  properties: {
+    baseUrl: { type: "string", minLength: 1 },
+    username: { type: "string", minLength: 1 },
+    password: { type: "string", minLength: 1 },
+  },
+  additionalProperties: false,
+} as const;
+
+type TestBody = {
+  baseUrl: string;
+  username: string;
+  password: string;
+};
+
 // Credentials (username/password) are intentionally absent — see redact()
 // below, never returned in any response.
 const providerSchema = {
@@ -63,6 +80,19 @@ const providerSchema = {
   required: ["id", "name", "baseUrl", "maxConcurrentStreams", "enabled", "createdAt", "updatedAt"],
 } as const;
 
+// Shared shape for "did this auth check pass" — used standalone by
+// POST /providers/test and nested (as `auth`) in ProviderStatus below.
+const authCheckResultSchema = {
+  $id: "AuthCheckResult",
+  type: "object",
+  properties: {
+    ok: { type: "boolean" },
+    error: { type: "string", description: "Present only when ok is false." },
+    checkedAt: { type: "string", format: "date-time" },
+  },
+  required: ["ok", "checkedAt"],
+} as const;
+
 const providerStatusSchema = {
   $id: "ProviderStatus",
   type: "object",
@@ -71,15 +101,7 @@ const providerStatusSchema = {
     enabled: { type: "boolean" },
     activeStreams: { type: "integer", description: "Recordings currently in progress against this provider." },
     maxConcurrentStreams: { type: "integer" },
-    auth: {
-      type: "object",
-      properties: {
-        ok: { type: "boolean" },
-        error: { type: "string", description: "Present only when ok is false." },
-        checkedAt: { type: "string", format: "date-time" },
-      },
-      required: ["ok", "checkedAt"],
-    },
+    auth: { $ref: "AuthCheckResult#" },
   },
   required: ["id", "enabled", "activeStreams", "maxConcurrentStreams", "auth"],
 } as const;
@@ -93,6 +115,7 @@ function redact(provider: typeof providers.$inferSelect) {
 
 export async function providerRoutes(app: FastifyInstance) {
   app.addSchema(providerSchema);
+  app.addSchema(authCheckResultSchema);
   app.addSchema(providerStatusSchema);
 
   // onRequest, not preHandler: Fastify validates the body schema before
@@ -126,6 +149,28 @@ export async function providerRoutes(app: FastifyInstance) {
         .all();
       reply.code(201);
       return redact(created);
+    },
+  );
+
+  // Tests credentials before they're ever saved — lets the admin UI gate
+  // its "Add provider" save button on a passing test (per user request),
+  // without needing a provider row (and its id) to already exist. Never
+  // touches the database; the credentials are only ever held in memory for
+  // the duration of the request.
+  app.post<{ Body: TestBody }>(
+    "/providers/test",
+    {
+      schema: {
+        tags: ["providers"],
+        summary: "Test provider credentials",
+        description: "Live auth check against the given credentials, without creating or storing a provider.",
+        body: testBodySchema,
+        response: { 200: { $ref: "AuthCheckResult#" } },
+      },
+    },
+    async (request) => {
+      const auth = await checkXtreamAuth(request.body);
+      return { ...auth, checkedAt: new Date().toISOString() };
     },
   );
 
