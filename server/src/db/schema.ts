@@ -140,3 +140,32 @@ export const recordings = sqliteTable(
     ruleOccurrenceIdx: uniqueIndex("recordings_rule_start_idx").on(table.recurringRuleId, table.startTime),
   }),
 );
+
+// Singleton config rows (PLAN.md "GET/PUT /config/storage"). Always exactly
+// one row, created on first read with defaults if missing — see
+// ../db/settings.ts. Not a per-provider/per-location table: PLAN.md's
+// "storage location(s)" plural is deferred until multiple locations are
+// actually needed; this is one directory.
+export const storageConfig = sqliteTable("storage_config", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  directory: text("directory").notNull(),
+  // Hard-reject threshold for the storage-exhaustion check (checkHardReject
+  // in ../hardReject.ts) — a schedule/record request is rejected if free
+  // space on this directory's filesystem is already below this.
+  minFreeBytes: integer("min_free_bytes").notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// Singleton config row (PLAN.md "GET/PUT /config/retention", "Retention
+// policy shape" — decided 2026-07-19: TTL, not a storage cap or per-channel
+// rules). ttlDays null means retention is disabled — nothing is ever
+// auto-deleted until a TTL is explicitly configured.
+export const retentionConfig = sqliteTable("retention_config", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  ttlDays: integer("ttl_days"),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
