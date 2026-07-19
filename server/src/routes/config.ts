@@ -51,7 +51,7 @@ const retentionConfigSchema = {
   type: "object",
   properties: {
     id: { type: "integer" },
-    ttlDays: { type: ["integer", "null"], description: "null disables retention — nothing is auto-deleted." },
+    ttlDays: { type: "integer", nullable: true, description: "null disables retention — nothing is auto-deleted." },
     updatedAt: { type: "string", format: "date-time" },
   },
   required: ["id", "ttlDays", "updatedAt"],
