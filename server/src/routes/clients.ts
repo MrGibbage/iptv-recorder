@@ -25,7 +25,7 @@ const clientSchema = {
     id: { type: "integer" },
     name: { type: "string" },
     createdAt: { type: "string", format: "date-time" },
-    revokedAt: { type: ["string", "null"], format: "date-time" },
+    revokedAt: { type: "string", nullable: true, format: "date-time" },
   },
   required: ["id", "name", "createdAt", "revokedAt"],
 } as const;
@@ -37,7 +37,7 @@ const clientCreatedSchema = {
     id: { type: "integer" },
     name: { type: "string" },
     createdAt: { type: "string", format: "date-time" },
-    revokedAt: { type: ["string", "null"], format: "date-time" },
+    revokedAt: { type: "string", nullable: true, format: "date-time" },
     apiKey: { type: "string", description: "Shown exactly once — only its hash is stored, it cannot be recovered later." },
   },
   required: ["id", "name", "createdAt", "revokedAt", "apiKey"],
