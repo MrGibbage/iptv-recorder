@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { and, eq, gte, lte } from "drizzle-orm";
+import { and, eq, gte, isNotNull, isNull, lte } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { providers, recordings, recurringRules, recurringRuleSkips } from "../db/schema.js";
 import { requireApiKey } from "../auth.js";
@@ -73,6 +73,20 @@ type ListQuery = {
   startAfter?: string;
   startBefore?: string;
   recurringRuleId?: number;
+};
+
+const recurringListQuerySchema = {
+  type: "object",
+  properties: {
+    providerId: { type: "integer" },
+    cancelled: { type: "boolean" },
+  },
+  additionalProperties: false,
+} as const;
+
+type RecurringListQuery = {
+  providerId?: number;
+  cancelled?: boolean;
 };
 
 const skipBodySchema = {
@@ -279,6 +293,40 @@ export async function recordingRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: "recording already finished" });
     }
     reply.code(204);
+  });
+
+  // Not in PLAN.md's original endpoint list — the flat resource model never
+  // called for a way to enumerate recurring_rules directly, but a UI (or
+  // any client) that wants to manage rules has to be able to see them
+  // first. Filters mirror what the skip/cancel-rule endpoints need to look
+  // rules up by.
+  app.get<{ Querystring: RecurringListQuery }>(
+    "/recordings/recurring",
+    { schema: { querystring: recurringListQuerySchema } },
+    async (request) => {
+      const q = request.query;
+      const conditions = [];
+      if (q.providerId !== undefined) conditions.push(eq(recurringRules.providerId, q.providerId));
+      if (q.cancelled !== undefined) {
+        conditions.push(q.cancelled ? isNotNull(recurringRules.cancelledAt) : isNull(recurringRules.cancelledAt));
+      }
+      return conditions.length > 0
+        ? db
+            .select()
+            .from(recurringRules)
+            .where(and(...conditions))
+            .all()
+        : db.select().from(recurringRules).all();
+    },
+  );
+
+  app.get<{ Params: { ruleId: string } }>("/recordings/recurring/:ruleId", async (request, reply) => {
+    const ruleId = Number(request.params.ruleId);
+    const [rule] = db.select().from(recurringRules).where(eq(recurringRules.id, ruleId)).all();
+    if (!rule) {
+      return reply.code(404).send({ error: "recurring rule not found" });
+    }
+    return rule;
   });
 
   // Skip a single occurrence by date, materialized or not (PLAN.md

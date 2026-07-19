@@ -1,21 +1,65 @@
-import { useEffect, useState } from 'react'
+import type { ReactNode } from "react";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { NavBar } from "./components/NavBar";
+import { useApiKey } from "./hooks/useApiKey";
+import { Settings } from "./pages/Settings";
+import { Providers } from "./pages/Providers";
+import { Recordings } from "./pages/Recordings";
+import { RecurringRules } from "./pages/RecurringRules";
+import { Config } from "./pages/Config";
 
-function App() {
-  const [apiStatus, setApiStatus] = useState<'checking' | 'ok' | 'error'>('checking')
-
-  useEffect(() => {
-    fetch('/api/health')
-      .then((res) => (res.ok ? setApiStatus('ok') : setApiStatus('error')))
-      .catch(() => setApiStatus('error'))
-  }, [])
-
-  return (
-    <main>
-      <h1>iptv-recorder</h1>
-      <p>Settings UI — scaffold in progress.</p>
-      <p>API status: {apiStatus}</p>
-    </main>
-  )
+function RequireApiKey({ children }: { children: ReactNode }) {
+  const { apiKey } = useApiKey();
+  if (!apiKey) {
+    return <Navigate to="/settings" replace />;
+  }
+  return <>{children}</>;
 }
 
-export default App
+function App() {
+  const { apiKey } = useApiKey();
+
+  return (
+    <BrowserRouter>
+      <NavBar connected={!!apiKey} />
+      <Routes>
+        <Route path="/settings" element={<Settings />} />
+        <Route
+          path="/providers"
+          element={
+            <RequireApiKey>
+              <Providers />
+            </RequireApiKey>
+          }
+        />
+        <Route
+          path="/recordings"
+          element={
+            <RequireApiKey>
+              <Recordings />
+            </RequireApiKey>
+          }
+        />
+        <Route
+          path="/recurring-rules"
+          element={
+            <RequireApiKey>
+              <RecurringRules />
+            </RequireApiKey>
+          }
+        />
+        <Route
+          path="/config"
+          element={
+            <RequireApiKey>
+              <Config />
+            </RequireApiKey>
+          }
+        />
+        <Route path="*" element={<Navigate to={apiKey ? "/providers" : "/settings"} replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+export default App;
