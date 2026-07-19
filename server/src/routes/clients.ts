@@ -18,6 +18,31 @@ type CreateBody = {
   name: string;
 };
 
+const clientSchema = {
+  $id: "Client",
+  type: "object",
+  properties: {
+    id: { type: "integer" },
+    name: { type: "string" },
+    createdAt: { type: "string", format: "date-time" },
+    revokedAt: { type: ["string", "null"], format: "date-time" },
+  },
+  required: ["id", "name", "createdAt", "revokedAt"],
+} as const;
+
+const clientCreatedSchema = {
+  $id: "ClientCreated",
+  type: "object",
+  properties: {
+    id: { type: "integer" },
+    name: { type: "string" },
+    createdAt: { type: "string", format: "date-time" },
+    revokedAt: { type: ["string", "null"], format: "date-time" },
+    apiKey: { type: "string", description: "Shown exactly once — only its hash is stored, it cannot be recovered later." },
+  },
+  required: ["id", "name", "createdAt", "revokedAt", "apiKey"],
+} as const;
+
 function hashKey(key: string): string {
   return crypto.createHash("sha256").update(key).digest("hex");
 }
@@ -42,11 +67,21 @@ function redact(client: typeof clients.$inferSelect) {
 // the old key, POST /clients for a new one. No separate rotate endpoint;
 // the two primitives already cover it without adding a third.
 export async function clientRoutes(app: FastifyInstance) {
+  app.addSchema(clientSchema);
+  app.addSchema(clientCreatedSchema);
+
   app.addHook("onRequest", requireApiKey);
 
   app.post<{ Body: CreateBody }>(
     "/clients",
-    { schema: { body: createBodySchema } },
+    {
+      schema: {
+        tags: ["clients"],
+        summary: "Issue a new client API key",
+        body: createBodySchema,
+        response: { 201: { $ref: "ClientCreated#" } },
+      },
+    },
     async (request, reply) => {
       const apiKey = crypto.randomBytes(32).toString("base64url");
       const [created] = db
@@ -61,26 +96,47 @@ export async function clientRoutes(app: FastifyInstance) {
     },
   );
 
-  app.get("/clients", async () => {
-    return db.select().from(clients).all().map(redact);
-  });
+  app.get(
+    "/clients",
+    {
+      schema: {
+        tags: ["clients"],
+        summary: "List clients",
+        response: { 200: { type: "array", items: { $ref: "Client#" } } },
+      },
+    },
+    async () => {
+      return db.select().from(clients).all().map(redact);
+    },
+  );
 
-  app.delete<{ Params: { id: string } }>("/clients/:id", async (request, reply) => {
-    const id = Number(request.params.id);
-    const [existing] = db.select().from(clients).where(eq(clients.id, id)).all();
-    if (!existing) {
-      return reply.code(404).send({ error: "client not found" });
-    }
-    if (existing.revokedAt) {
-      return reply.code(409).send({ error: "client already revoked" });
-    }
+  app.delete<{ Params: { id: string } }>(
+    "/clients/:id",
+    {
+      schema: {
+        tags: ["clients"],
+        summary: "Revoke a client's API key",
+        description: "Soft-revoke (revokedAt is set, the row is kept). Rotation is revoke + POST /clients for a new key.",
+        response: { 200: { $ref: "Client#" }, 404: { $ref: "Error#" }, 409: { $ref: "Error#" } },
+      },
+    },
+    async (request, reply) => {
+      const id = Number(request.params.id);
+      const [existing] = db.select().from(clients).where(eq(clients.id, id)).all();
+      if (!existing) {
+        return reply.code(404).send({ error: "client not found" });
+      }
+      if (existing.revokedAt) {
+        return reply.code(409).send({ error: "client already revoked" });
+      }
 
-    const [updated] = db
-      .update(clients)
-      .set({ revokedAt: new Date() })
-      .where(eq(clients.id, id))
-      .returning()
-      .all();
-    return redact(updated);
-  });
+      const [updated] = db
+        .update(clients)
+        .set({ revokedAt: new Date() })
+        .where(eq(clients.id, id))
+        .returning()
+        .all();
+      return redact(updated);
+    },
+  );
 }
