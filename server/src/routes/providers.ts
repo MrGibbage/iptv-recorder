@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import Database from "better-sqlite3";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { providers } from "../db/schema.js";
+import { providers, recordings } from "../db/schema.js";
 import { encrypt } from "../crypto.js";
 import { requireApiKey } from "../auth.js";
+import { checkProviderAuth } from "../worker/xtreamAuth.js";
 
 const createBodySchema = {
   type: "object",
@@ -91,6 +92,35 @@ export async function providerRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "provider not found" });
     }
     return redact(row);
+  });
+
+  // PLAN.md "GET /providers/{id}/status" — deferred at scaffolding time
+  // pending a recordings table and an Xtream HTTP client; both now exist.
+  // activeStreams counts rows currently mid-recording, not the sweep-line
+  // peak-overlap math in ../hardReject.ts (that's about a *hypothetical*
+  // future window at request time; this is "what's happening right now").
+  app.get<{ Params: { id: string } }>("/providers/:id/status", async (request, reply) => {
+    const id = Number(request.params.id);
+    const [provider] = db.select().from(providers).where(eq(providers.id, id)).all();
+    if (!provider) {
+      return reply.code(404).send({ error: "provider not found" });
+    }
+
+    const activeStreams = db
+      .select()
+      .from(recordings)
+      .where(and(eq(recordings.providerId, id), eq(recordings.status, "recording")))
+      .all().length;
+
+    const auth = await checkProviderAuth(provider);
+
+    return {
+      id: provider.id,
+      enabled: provider.enabled,
+      activeStreams,
+      maxConcurrentStreams: provider.maxConcurrentStreams,
+      auth: { ...auth, checkedAt: new Date().toISOString() },
+    };
   });
 
   app.put<{ Params: { id: string }; Body: UpdateBody }>(
