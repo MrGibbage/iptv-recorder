@@ -9,3 +9,10 @@ export const SCHEDULER_TICK_INTERVAL_MS = 30_000;
 // GET /providers/{id}/status's live auth check — a slow/unreachable
 // provider shouldn't hang the request indefinitely.
 export const PROVIDER_STATUS_CHECK_TIMEOUT_MS = 5_000;
+
+// GET /recordings?includeProjected=true — how far ahead to compute
+// projected-but-not-yet-materialized occurrences of a recurring rule.
+// Bounded to keep the request cheap; an indefinite rule (PLAN.md "recurring
+// rules run indefinitely by default") has no natural stopping point
+// otherwise.
+export const PROJECTION_HORIZON_DAYS = 30;

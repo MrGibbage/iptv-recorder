@@ -8,6 +8,7 @@ import { checkHardReject } from "../hardReject.js";
 import { cancelActiveWorker } from "../worker/dispatch.js";
 import { parseRange } from "../httpRange.js";
 import { occurrenceWindowForDay } from "../scheduler/occurrence.js";
+import { projectOccurrences } from "../scheduler/projection.js";
 
 const RECORDING_STATUSES = ["scheduled", "recording", "completed", "failed", "cancelled"] as const;
 type RecordingStatus = (typeof RECORDING_STATUSES)[number];
@@ -62,6 +63,7 @@ const listQuerySchema = {
     startAfter: { type: "string" },
     startBefore: { type: "string" },
     recurringRuleId: { type: "integer" },
+    includeProjected: { type: "boolean" },
   },
   additionalProperties: false,
 } as const;
@@ -73,6 +75,7 @@ type ListQuery = {
   startAfter?: string;
   startBefore?: string;
   recurringRuleId?: number;
+  includeProjected?: boolean;
 };
 
 const recurringListQuerySchema = {
@@ -230,10 +233,6 @@ export async function recordingRoutes(app: FastifyInstance) {
     },
   );
 
-  // include_projected (computed-but-not-yet-materialized future occurrences
-  // of recurring rules) is deferred — it needs its own multi-day projection
-  // logic distinct from the scheduler's "is today due" check. This only
-  // lists rows that already exist.
   app.get<{ Querystring: ListQuery }>(
     "/recordings",
     { schema: { querystring: listQuerySchema } },
@@ -246,28 +245,64 @@ export async function recordingRoutes(app: FastifyInstance) {
       if (q.status !== undefined) conditions.push(eq(recordings.status, q.status));
       if (q.recurringRuleId !== undefined) conditions.push(eq(recordings.recurringRuleId, q.recurringRuleId));
 
+      let startAfter: Date | undefined;
       if (q.startAfter !== undefined) {
-        const d = new Date(q.startAfter);
-        if (Number.isNaN(d.getTime())) {
+        startAfter = new Date(q.startAfter);
+        if (Number.isNaN(startAfter.getTime())) {
           return reply.code(400).send({ error: "startAfter must be a valid date" });
         }
-        conditions.push(gte(recordings.startTime, d));
+        conditions.push(gte(recordings.startTime, startAfter));
       }
+      let startBefore: Date | undefined;
       if (q.startBefore !== undefined) {
-        const d = new Date(q.startBefore);
-        if (Number.isNaN(d.getTime())) {
+        startBefore = new Date(q.startBefore);
+        if (Number.isNaN(startBefore.getTime())) {
           return reply.code(400).send({ error: "startBefore must be a valid date" });
         }
-        conditions.push(lte(recordings.startTime, d));
+        conditions.push(lte(recordings.startTime, startBefore));
       }
 
-      return conditions.length > 0
-        ? db
-            .select()
-            .from(recordings)
-            .where(and(...conditions))
-            .all()
+      const rows = conditions.length > 0
+        ? db.select().from(recordings).where(and(...conditions)).all()
         : db.select().from(recordings).all();
+
+      if (!q.includeProjected) {
+        return rows;
+      }
+
+      // Projected occurrences (PLAN.md "include_projected ... clearly
+      // distinguished from materialized ones") are always hypothetically
+      // "scheduled" — nothing else to project, no such thing as a projected
+      // completed/failed/cancelled occurrence — so a status filter for
+      // anything else means there's nothing to add.
+      type ProjectedRow = ReturnType<typeof projectOccurrences>[number] & { status: "scheduled"; projected: true };
+      type MaterializedRow = (typeof rows)[number] & { projected: false };
+      const projected: ProjectedRow[] = [];
+
+      if (q.status === undefined || q.status === "scheduled") {
+        const ruleConditions = [isNull(recurringRules.cancelledAt)];
+        if (q.providerId !== undefined) ruleConditions.push(eq(recurringRules.providerId, q.providerId));
+        if (q.recurringRuleId !== undefined) ruleConditions.push(eq(recurringRules.id, q.recurringRuleId));
+
+        const now = new Date();
+        const rules = db.select().from(recurringRules).where(and(...ruleConditions)).all();
+        for (const rule of rules) {
+          if (q.channelId !== undefined && rule.channelId !== q.channelId) continue;
+
+          for (const occurrence of projectOccurrences(rule, now)) {
+            if (startAfter !== undefined && occurrence.startTime < startAfter) continue;
+            if (startBefore !== undefined && occurrence.startTime > startBefore) continue;
+            projected.push({ ...occurrence, status: "scheduled", projected: true });
+          }
+        }
+      }
+
+      const combined: (MaterializedRow | ProjectedRow)[] = [
+        ...rows.map((r): MaterializedRow => ({ ...r, projected: false })),
+        ...projected,
+      ];
+      combined.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+      return combined;
     },
   );
 
