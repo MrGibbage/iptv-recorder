@@ -151,7 +151,7 @@ Concretely:
 - **Provider selection:** confirm `provider_id` passed explicitly by the client is sufficient, vs. needing server-side matching later.
 - **Remux vs raw store:** confirm remux-on-record is the right call vs. storing raw TS as-is.
 - **Retention policy shape:** per-recording TTL? Total storage cap with LRU eviction? Per-channel rules?
-- **Provider delete cascade:** does `DELETE /providers/{id}` block if there are future scheduled recordings against it, or cascade-cancel them?
+- **Provider delete cascade:** decided — block, not cascade. `recordings.provider_id` is a plain FK (`ON DELETE NO ACTION`, SQLite's default), so a provider referenced by any recording (scheduled or historical) can't be deleted; `DELETE /providers/{id}` returns 409 in that case rather than leaking a raw DB error or silently destroying recording history.
 - **API key rotation:** `POST /clients` issuance is decided as admin-initiated only (no self-registration endpoint from the client side — same passive-downloader relationship as SABnzbd/Sonarr: the recorder never reaches out to or "discovers" a scheduler, it just issues a key that gets pasted into whatever client's config). Rotation flow specifically (revoke + reissue vs. in-place key refresh) still TBD.
 - **Conflict handling:** what happens when two scheduled recordings overlap on the *same channel*? (Concurrent-stream limit across different channels is now decided — hard rejection at request time.)
 - **Rejection UX:** when a request is rejected (concurrent-stream limit, storage exhaustion, or disabled provider), what does the client see — just a 4xx with a reason, or does the recorder suggest alternatives (e.g. next available slot)?
@@ -163,7 +163,8 @@ Concretely:
 - [ ] **TODO2:** Design exact recurring-rule schema (pattern fields, optional `end_date`/`max_occurrences`, skip-exception list) and the materialization horizon (how far ahead of an occurrence's start time the recorder creates its `recordings` row).
 - [ ] **TODO2:** Decide remux vs raw storage format.
 - [x] **TODO2:** Decide how stored provider credentials are secured at rest. Done 2026-07-19 — see Credential storage security above.
-- [ ] **TODO2:** Decide provider-delete cascade behavior (moot until the `recordings` table exists — `DELETE /providers/{id}` is currently a plain delete, nothing to cascade against yet) and API key issuance/rotation flow.
+- [x] **TODO2:** Decide provider-delete cascade behavior. Done 2026-07-19 — see Provider delete cascade above.
+- [ ] **TODO2:** Decide API key issuance/rotation flow (`POST /clients` itself isn't built yet either — `server/src/db/seed-client.ts` is a CLI stand-in).
 - [x] **TODO1:** Add `.gitignore` for real config/secrets + a placeholder `.env.example` before any real config file is created. Done as part of scaffolding — `.env.example` lives in `server/.env.example` (not repo root), since `dotenv/config`'s default lookup is relative to `process.cwd()`, which is `server/` when run via `pnpm --filter server`.
 - [ ] **TODO3:** Design exact request/response schemas and error shapes for the drafted endpoints.
 - [ ] **TODO3:** Design retention policy config (TTL vs cap vs per-channel rules) and the minimum-free-space threshold used for the storage-exhaustion rejection check.
