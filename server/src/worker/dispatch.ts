@@ -13,9 +13,18 @@ import { startRemux } from "./ffmpegRemux.js";
 const RECORDINGS_DIR = process.env.RECORDINGS_DIR ?? "./data/recordings";
 mkdirSync(RECORDINGS_DIR, { recursive: true });
 
+interface ActiveWorker {
+  process: ChildProcessWithoutNullStreams;
+  // Set by cancelActiveWorker so the 'close' handler knows a SIGTERM was
+  // intentional (DELETE /recordings/{id}) and must not overwrite the
+  // 'cancelled' status that handler already set with 'failed'.
+  cancelled: boolean;
+}
+
 // recordingId -> in-flight ffmpeg process. Prevents re-dispatching a row a
-// later tick would otherwise still see as due, and lets shutdown clean up.
-const activeWorkers = new Map<number, ChildProcessWithoutNullStreams>();
+// later tick would otherwise still see as due, and lets shutdown/cancel
+// clean up.
+const activeWorkers = new Map<number, ActiveWorker>();
 
 function fail(recordingId: number, reason: string): void {
   db.update(recordings)
@@ -67,10 +76,17 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
       .run();
 
     const { process, getStderrTail } = startRemux(inputUrl, outputPath, durationSeconds);
-    activeWorkers.set(recording.id, process);
+    const worker: ActiveWorker = { process, cancelled: false };
+    activeWorkers.set(recording.id, worker);
 
     process.on("close", (code, signal) => {
       activeWorkers.delete(recording.id);
+      if (worker.cancelled) {
+        // DELETE /recordings/{id} already set status='cancelled'; nothing
+        // to reconcile here even though the process technically "failed"
+        // by exit code once SIGTERM'd.
+        return;
+      }
       if (code === 0) {
         db.update(recordings)
           .set({ status: "completed", filePath: outputPath, updatedAt: new Date() })
@@ -86,11 +102,29 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
   }
 }
 
+// Used by DELETE /recordings/{id} to stop an in-progress recording. Returns
+// true if a live worker was found and signalled; the caller is responsible
+// for updating the DB row's status (this only stops the process).
+export function cancelActiveWorker(recordingId: number): boolean {
+  const worker = activeWorkers.get(recordingId);
+  if (!worker) {
+    return false;
+  }
+  worker.cancelled = true;
+  worker.process.kill("SIGTERM");
+  return true;
+}
+
 // Graceful shutdown — SIGTERM in-flight ffmpeg processes rather than
-// leaving orphans running past the server that started them.
+// leaving orphans running past the server that started them. Unlike
+// cancelActiveWorker, `cancelled` is left false, so each process's own
+// 'close' handler still runs normally and marks the row 'failed' (reason:
+// terminated by signal) rather than leaving it stuck as 'recording' forever
+// with nothing actually running. There's no resume-on-restart — a recording
+// interrupted by a server restart has to be rescheduled.
 export function stopAllWorkers(): void {
-  for (const child of activeWorkers.values()) {
-    child.kill("SIGTERM");
+  for (const worker of activeWorkers.values()) {
+    worker.process.kill("SIGTERM");
   }
   activeWorkers.clear();
 }
