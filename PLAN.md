@@ -155,15 +155,15 @@ Concretely:
 - **API key rotation:** `POST /clients` issuance is decided as admin-initiated only (no self-registration endpoint from the client side — same passive-downloader relationship as SABnzbd/Sonarr: the recorder never reaches out to or "discovers" a scheduler, it just issues a key that gets pasted into whatever client's config). Rotation flow specifically (revoke + reissue vs. in-place key refresh) still TBD.
 - **Conflict handling:** what happens when two scheduled recordings overlap on the *same channel*? (Concurrent-stream limit across different channels is now decided — hard rejection at request time.)
 - **Rejection UX:** when a request is rejected (concurrent-stream limit, storage exhaustion, or disabled provider), what does the client see — just a 4xx with a reason, or does the recorder suggest alternatives (e.g. next available slot)?
-- **Credential storage security:** provider credentials at rest need to be encrypted/secured on disk, not plaintext config — mirrors the same concern Lao's own docs raise about not writing credentials to disk in logs.
+- **Credential storage security:** decided — AES-256-GCM (Node's built-in `crypto`), key in `ENCRYPTION_KEY` (`server/.env`, gitignored, never committed). Implemented in `server/src/crypto.ts`; `providers.usernameEncrypted`/`passwordEncrypted` store ciphertext only, redacted out of every API response.
 
 ## Open Items
 
-- [ ] **TODO1:** Design provider settings page/API (add/edit/remove provider, `provider_id` assignment, max-concurrent-streams field, `enabled` toggle).
+- [x] **TODO1:** Design provider settings page/API (add/edit/remove provider, `provider_id` assignment, max-concurrent-streams field, `enabled` toggle). Done 2026-07-19 — `providers` table + `/providers` CRUD (`server/src/routes/providers.ts`), gated by the per-client API key middleware (`server/src/auth.ts`). `GET /providers/{id}/status`'s live fields (active stream count, live auth check) are deferred until the recordings table and an Xtream HTTP client exist — nothing to compute them from yet.
 - [ ] **TODO2:** Design exact recurring-rule schema (pattern fields, optional `end_date`/`max_occurrences`, skip-exception list) and the materialization horizon (how far ahead of an occurrence's start time the recorder creates its `recordings` row).
 - [ ] **TODO2:** Decide remux vs raw storage format.
-- [ ] **TODO2:** Decide how stored provider credentials are secured at rest.
-- [ ] **TODO2:** Decide provider-delete cascade behavior and API key issuance/rotation flow.
+- [x] **TODO2:** Decide how stored provider credentials are secured at rest. Done 2026-07-19 — see Credential storage security above.
+- [ ] **TODO2:** Decide provider-delete cascade behavior (moot until the `recordings` table exists — `DELETE /providers/{id}` is currently a plain delete, nothing to cascade against yet) and API key issuance/rotation flow.
 - [x] **TODO1:** Add `.gitignore` for real config/secrets + a placeholder `.env.example` before any real config file is created. Done as part of scaffolding — `.env.example` lives in `server/.env.example` (not repo root), since `dotenv/config`'s default lookup is relative to `process.cwd()`, which is `server/` when run via `pnpm --filter server`.
 - [ ] **TODO3:** Design exact request/response schemas and error shapes for the drafted endpoints.
 - [ ] **TODO3:** Design retention policy config (TTL vs cap vs per-channel rules) and the minimum-free-space threshold used for the storage-exhaustion rejection check.
