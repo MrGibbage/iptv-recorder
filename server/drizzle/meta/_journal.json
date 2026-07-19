@@ -22,6 +22,13 @@
       "when": 1784472537877,
       "tag": "0002_loving_rhino",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784472714912,
+      "tag": "0003_left_switch",
+      "breakpoints": true
     }
   ]
 }

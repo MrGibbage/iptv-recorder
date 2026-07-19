@@ -1,8 +1,7 @@
-import { sqliteTable, integer, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, integer, text, uniqueIndex, check } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 // Per-client API keys (PLAN.md "Auth: per-client API keys" — already decided).
-// The `recordings` table (materialized/one-off occurrences) lands once the
-// recording worker and materialization logic are built (see PLAN.md TODO2).
 export const clients = sqliteTable("clients", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
@@ -89,5 +88,55 @@ export const recurringRuleSkips = sqliteTable(
   },
   (table) => ({
     ruleDateIdx: uniqueIndex("recurring_rule_skips_rule_date_idx").on(table.ruleId, table.occurrenceDate),
+  }),
+);
+
+// Materialized recording occurrences (PLAN.md "Resource model: flat" and
+// "Recurring occurrence materialization"). Every occurrence — one-off or a
+// materialized instance of a recurring_rule — is a row here; there's no
+// separate resource tree for recurring recordings. Occurrences further out
+// than the materialization horizon are a computed projection, not a row
+// (see MATERIALIZATION_HORIZON_MINUTES in ../config.ts).
+//
+// provider_id has no ON DELETE behavior configured, so SQLite's default
+// (NO ACTION) applies: deleting a provider that any recording references
+// fails outright rather than cascading — recording history is never
+// silently destroyed by a provider deletion (see PLAN.md "Provider delete
+// cascade").
+export const recordings = sqliteTable(
+  "recordings",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    providerId: integer("provider_id")
+      .notNull()
+      .references(() => providers.id),
+    channelId: text("channel_id").notNull(),
+    // Null for a one-off recording; set for a materialized recurring occurrence.
+    recurringRuleId: integer("recurring_rule_id").references(() => recurringRules.id),
+    startTime: integer("start_time", { mode: "timestamp" }).notNull(),
+    endTime: integer("end_time", { mode: "timestamp" }).notNull(),
+    status: text("status", {
+      enum: ["scheduled", "recording", "completed", "failed", "cancelled"],
+    })
+      .notNull()
+      .default("scheduled"),
+    // Populated once the recording worker finishes writing the file.
+    filePath: text("file_path"),
+    // Populated when status = 'failed'.
+    failureReason: text("failure_reason"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    endAfterStart: check("recordings_end_after_start", sql`${table.endTime} > ${table.startTime}`),
+    // De-dupes materialization of the same rule's occurrence if the scheduler
+    // tick loop ever overlaps or retries. NULLs (one-off recordings) are
+    // never considered equal to each other in a SQLite unique index, so this
+    // has no effect on one-off rows.
+    ruleOccurrenceIdx: uniqueIndex("recordings_rule_start_idx").on(table.recurringRuleId, table.startTime),
   }),
 );

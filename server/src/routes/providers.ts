@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { providers } from "../db/schema.js";
@@ -126,9 +127,19 @@ export async function providerRoutes(app: FastifyInstance) {
     if (!existing) {
       return reply.code(404).send({ error: "provider not found" });
     }
-    // No recordings table yet to cascade against (PLAN.md "Provider delete
-    // cascade" is still open) — plain delete is the whole story for now.
-    db.delete(providers).where(eq(providers.id, id)).run();
+    try {
+      // PLAN.md "Provider delete cascade" — decided as a block, not a
+      // cascade: the recordings.provider_id FK (ON DELETE NO ACTION, the
+      // SQLite default) already enforces this at the DB level, so any
+      // recording referencing this provider surfaces as a clean 409 here
+      // rather than an unhandled DB error or a silent cascade.
+      db.delete(providers).where(eq(providers.id, id)).run();
+    } catch (err) {
+      if (err instanceof Database.SqliteError && err.code === "SQLITE_CONSTRAINT_FOREIGNKEY") {
+        return reply.code(409).send({ error: "provider has recordings; delete or reassign them first" });
+      }
+      throw err;
+    }
     reply.code(204);
   });
 }
