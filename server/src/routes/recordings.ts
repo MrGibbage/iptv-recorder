@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { and, eq, gte, lte } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { providers, recordings } from "../db/schema.js";
+import { providers, recordings, recurringRules } from "../db/schema.js";
 import { requireApiKey } from "../auth.js";
 import { checkHardReject } from "../hardReject.js";
 import { cancelActiveWorker } from "../worker/dispatch.js";
@@ -11,14 +11,29 @@ import { parseRange } from "../httpRange.js";
 const RECORDING_STATUSES = ["scheduled", "recording", "completed", "failed", "cancelled"] as const;
 type RecordingStatus = (typeof RECORDING_STATUSES)[number];
 
+const recurrenceSchema = {
+  type: "object",
+  required: ["daysOfWeek", "startMinuteOfDay", "durationMinutes"],
+  properties: {
+    // Bitmask, bit 0 = Monday .. bit 6 = Sunday (recurring_rules.daysOfWeek).
+    daysOfWeek: { type: "integer", minimum: 1, maximum: 127 },
+    startMinuteOfDay: { type: "integer", minimum: 0, maximum: 1439 },
+    durationMinutes: { type: "integer", minimum: 1 },
+    endDate: { type: "string", minLength: 1 },
+    maxOccurrences: { type: "integer", minimum: 1 },
+  },
+  additionalProperties: false,
+} as const;
+
 const createBodySchema = {
   type: "object",
-  required: ["providerId", "channelId", "startTime", "endTime"],
+  required: ["providerId", "channelId"],
   properties: {
     providerId: { type: "integer" },
     channelId: { type: "string", minLength: 1 },
     startTime: { type: "string", minLength: 1 },
     endTime: { type: "string", minLength: 1 },
+    recurrence: recurrenceSchema,
   },
   additionalProperties: false,
 } as const;
@@ -26,8 +41,15 @@ const createBodySchema = {
 type CreateBody = {
   providerId: number;
   channelId: string;
-  startTime: string;
-  endTime: string;
+  startTime?: string;
+  endTime?: string;
+  recurrence?: {
+    daysOfWeek: number;
+    startMinuteOfDay: number;
+    durationMinutes: number;
+    endDate?: string;
+    maxOccurrences?: number;
+  };
 };
 
 const listQuerySchema = {
@@ -52,22 +74,81 @@ type ListQuery = {
   recurringRuleId?: number;
 };
 
-// One-off recordings only for now. Recurring-pattern creation needs a
-// next-occurrence calculator and horizon-based materialization (the
-// scheduler engine, not built yet) and is a deliberate follow-up rather than
-// part of this endpoint (see PLAN.md "Recurring occurrence materialization").
 export async function recordingRoutes(app: FastifyInstance) {
   // onRequest, not preHandler: Fastify validates the body schema before
   // preHandler runs, so an unauthenticated request with a malformed body
   // would otherwise get a 400 instead of a 401.
   app.addHook("onRequest", requireApiKey);
 
+  // Accepts either a one-off time range (startTime/endTime) or a recurrence
+  // pattern — mutually exclusive, exactly one required (PLAN.md "Resource
+  // model: flat" / "POST /recordings accepts an optional recurrence
+  // pattern"). A recurring request creates a recurring_rules row, not a
+  // recordings row: the scheduler tick (server/src/scheduler/) materializes
+  // its actual occurrences once each is within the materialization horizon,
+  // same as any other rule — this endpoint doesn't pre-materialize a first
+  // occurrence itself, to keep "when does an occurrence get created" logic
+  // in exactly one place.
   app.post<{ Body: CreateBody }>(
     "/recordings",
     { schema: { body: createBodySchema } },
     async (request, reply) => {
       const body = request.body;
+      const hasOneOff = body.startTime !== undefined || body.endTime !== undefined;
+      const hasRecurrence = body.recurrence !== undefined;
 
+      if (hasOneOff && hasRecurrence) {
+        return reply.code(400).send({ error: "specify either startTime/endTime or recurrence, not both" });
+      }
+      if (!hasOneOff && !hasRecurrence) {
+        return reply.code(400).send({ error: "must specify either startTime/endTime or a recurrence pattern" });
+      }
+
+      const [provider] = db.select().from(providers).where(eq(providers.id, body.providerId)).all();
+      if (!provider) {
+        return reply.code(404).send({ error: "provider not found" });
+      }
+
+      if (hasRecurrence) {
+        const recurrence = body.recurrence!;
+
+        // Only what's checkable without a concrete time window — the
+        // per-occurrence concurrent-stream/storage checks (checkHardReject)
+        // already run again at materialization time for each occurrence via
+        // the scheduler tick, since those depend on conditions at the time
+        // an occurrence actually fires, not at rule-creation time.
+        if (!provider.enabled) {
+          return reply.code(409).send({ error: "provider is disabled" });
+        }
+
+        let endDate: Date | undefined;
+        if (recurrence.endDate !== undefined) {
+          endDate = new Date(recurrence.endDate);
+          if (Number.isNaN(endDate.getTime())) {
+            return reply.code(400).send({ error: "recurrence.endDate must be a valid date" });
+          }
+        }
+
+        const [createdRule] = db
+          .insert(recurringRules)
+          .values({
+            providerId: body.providerId,
+            channelId: body.channelId,
+            daysOfWeek: recurrence.daysOfWeek,
+            startMinuteOfDay: recurrence.startMinuteOfDay,
+            durationMinutes: recurrence.durationMinutes,
+            endDate,
+            maxOccurrences: recurrence.maxOccurrences,
+          })
+          .returning()
+          .all();
+        reply.code(201);
+        return createdRule;
+      }
+
+      if (body.startTime === undefined || body.endTime === undefined) {
+        return reply.code(400).send({ error: "both startTime and endTime are required for a one-off recording" });
+      }
       const startTime = new Date(body.startTime);
       const endTime = new Date(body.endTime);
       if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
@@ -75,11 +156,6 @@ export async function recordingRoutes(app: FastifyInstance) {
       }
       if (endTime <= startTime) {
         return reply.code(400).send({ error: "endTime must be after startTime" });
-      }
-
-      const [provider] = db.select().from(providers).where(eq(providers.id, body.providerId)).all();
-      if (!provider) {
-        return reply.code(404).send({ error: "provider not found" });
       }
 
       const rejection = checkHardReject(provider, startTime, endTime);
