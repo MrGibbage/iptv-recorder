@@ -15,6 +15,13 @@
       "when": 1784472140368,
       "tag": "0001_same_pride",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784472537877,
+      "tag": "0002_loving_rhino",
+      "breakpoints": true
     }
   ]
 }
