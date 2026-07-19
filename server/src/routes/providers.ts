@@ -53,7 +53,10 @@ function redact(provider: typeof providers.$inferSelect) {
 }
 
 export async function providerRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", requireApiKey);
+  // onRequest, not preHandler: Fastify validates the body schema before
+  // preHandler runs, so an unauthenticated request with a malformed body
+  // would otherwise get a 400 instead of a 401.
+  app.addHook("onRequest", requireApiKey);
 
   app.post<{ Body: CreateBody }>(
     "/providers",
