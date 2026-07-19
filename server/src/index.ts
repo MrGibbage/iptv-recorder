@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import { db } from "./db/client.js";
 import { clients } from "./db/schema.js";
 import { providerRoutes } from "./routes/providers.js";
+import { recordingRoutes } from "./routes/recordings.js";
 
 const app = Fastify({ logger: true });
 
@@ -16,6 +17,7 @@ app.get("/health/db", async () => {
 });
 
 await app.register(providerRoutes);
+await app.register(recordingRoutes);
 
 const port = Number(process.env.PORT ?? 3000);
 

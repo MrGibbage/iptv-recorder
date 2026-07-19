@@ -130,7 +130,7 @@ Concretely:
 - `GET /providers/{id}/status` — live auth check + current active stream count vs. max + `enabled` state
 
 *Recordings*
-- `POST /recordings` — schedule (one-off, or recurring via an optional recurrence pattern; recurring rules run indefinitely unless `end_date`/`max_occurrences` is set)
+- `POST /recordings` — schedule (one-off, or recurring via an optional recurrence pattern; recurring rules run indefinitely unless `end_date`/`max_occurrences` is set). **Implemented 2026-07-19 for one-off recordings only** (`server/src/routes/recordings.ts`): validates `providerId`/`channelId`/`startTime`/`endTime`, hard-rejects a disabled provider (409) or a request that would push the provider's peak simultaneous-stream count (sweep-line over overlapping `scheduled`/`recording` rows, not just a pairwise check) past `max_concurrent_streams` (409). Storage-exhaustion check deferred until `config/storage` exists. Recurring-pattern acceptance deferred until the next-occurrence calculator (scheduler engine) exists.
 - `GET /recordings` — list/filter: `provider_id`, `channel_id`, `status` (`scheduled | recording | completed | failed | cancelled`), `start_after`/`start_before`, `recurring_rule_id`, `include_projected` (also return computed-but-not-yet-materialized future occurrences of recurring rules, flagged as projected)
 - `GET /recordings/{id}` — detail
 - `DELETE /recordings/{id}` — cancel a single, already-materialized recording/occurrence
