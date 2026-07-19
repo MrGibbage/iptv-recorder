@@ -2,11 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { and, eq, gte, lte } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { providers, recordings, recurringRules } from "../db/schema.js";
+import { providers, recordings, recurringRules, recurringRuleSkips } from "../db/schema.js";
 import { requireApiKey } from "../auth.js";
 import { checkHardReject } from "../hardReject.js";
 import { cancelActiveWorker } from "../worker/dispatch.js";
 import { parseRange } from "../httpRange.js";
+import { occurrenceWindowForDay } from "../scheduler/occurrence.js";
 
 const RECORDING_STATUSES = ["scheduled", "recording", "completed", "failed", "cancelled"] as const;
 type RecordingStatus = (typeof RECORDING_STATUSES)[number];
@@ -73,6 +74,43 @@ type ListQuery = {
   startBefore?: string;
   recurringRuleId?: number;
 };
+
+const skipBodySchema = {
+  type: "object",
+  required: ["date"],
+  properties: {
+    date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+  },
+  additionalProperties: false,
+} as const;
+
+type SkipBody = { date: string };
+
+// Shared by DELETE /recordings/{id} and the skip endpoint below — both
+// "cancel this specific occurrence" operations need the same race-safe
+// handling of an actively-recording row (see cancelActiveWorker in
+// ../worker/dispatch.ts). Returns null if the row isn't in a cancellable
+// state (already terminal), otherwise the updated row.
+function cancelRecordingRow(
+  recording: typeof recordings.$inferSelect,
+): typeof recordings.$inferSelect | null {
+  if (recording.status !== "scheduled" && recording.status !== "recording") {
+    return null;
+  }
+
+  const [updated] = db
+    .update(recordings)
+    .set({ status: "cancelled", updatedAt: new Date() })
+    .where(eq(recordings.id, recording.id))
+    .returning()
+    .all();
+
+  if (recording.status === "recording") {
+    cancelActiveWorker(recording.id);
+  }
+
+  return updated;
+}
 
 export async function recordingRoutes(app: FastifyInstance) {
   // onRequest, not preHandler: Fastify validates the body schema before
@@ -237,23 +275,109 @@ export async function recordingRoutes(app: FastifyInstance) {
     if (!existing) {
       return reply.code(404).send({ error: "recording not found" });
     }
-    if (existing.status !== "scheduled" && existing.status !== "recording") {
+    if (!cancelRecordingRow(existing)) {
       return reply.code(409).send({ error: "recording already finished" });
     }
+    reply.code(204);
+  });
 
-    // Set status before touching the worker: cancelActiveWorker's process
-    // 'close' handler checks a flag it sets itself, not this row, so there's
-    // no race between this write and that handler either way.
-    db.update(recordings)
-      .set({ status: "cancelled", updatedAt: new Date() })
-      .where(eq(recordings.id, id))
-      .run();
+  // Skip a single occurrence by date, materialized or not (PLAN.md
+  // "mirrors the iCalendar RRULE+EXDATE pattern"): cancels the recordings
+  // row if that date has already been materialized, otherwise records a
+  // skip exception so the scheduler tick never materializes it. Idempotent
+  // — skipping an already-skipped date just returns the existing exception.
+  app.post<{ Params: { ruleId: string }; Body: SkipBody }>(
+    "/recordings/recurring/:ruleId/skip",
+    { schema: { body: skipBodySchema } },
+    async (request, reply) => {
+      const ruleId = Number(request.params.ruleId);
+      const [rule] = db.select().from(recurringRules).where(eq(recurringRules.id, ruleId)).all();
+      if (!rule) {
+        return reply.code(404).send({ error: "recurring rule not found" });
+      }
+      if (rule.cancelledAt) {
+        return reply.code(409).send({ error: "recurring rule is cancelled" });
+      }
 
-    if (existing.status === "recording") {
-      cancelActiveWorker(id);
+      const day = new Date(`${request.body.date}T00:00:00`);
+      // Date silently rolls invalid components over into a valid date
+      // (e.g. "2026-02-30" becomes March 2) rather than rejecting them —
+      // reconstructing and comparing catches that instead of just NaN.
+      const reconstructed = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+      if (Number.isNaN(day.getTime()) || reconstructed !== request.body.date) {
+        return reply.code(400).send({ error: "date must be a valid calendar date" });
+      }
+
+      const { start } = occurrenceWindowForDay(rule, day);
+
+      const [existingRecording] = db
+        .select()
+        .from(recordings)
+        .where(and(eq(recordings.recurringRuleId, ruleId), eq(recordings.startTime, start)))
+        .all();
+
+      if (existingRecording) {
+        const cancelled = cancelRecordingRow(existingRecording);
+        if (!cancelled) {
+          return reply.code(409).send({ error: "occurrence already finished" });
+        }
+        return cancelled;
+      }
+
+      const [createdSkip] = db
+        .insert(recurringRuleSkips)
+        .values({ ruleId, occurrenceDate: request.body.date })
+        .onConflictDoNothing()
+        .returning()
+        .all();
+      if (createdSkip) {
+        reply.code(201);
+        return createdSkip;
+      }
+
+      // Already skipped — idempotent, return the existing exception.
+      const [existingSkip] = db
+        .select()
+        .from(recurringRuleSkips)
+        .where(and(eq(recurringRuleSkips.ruleId, ruleId), eq(recurringRuleSkips.occurrenceDate, request.body.date)))
+        .all();
+      return existingSkip;
+    },
+  );
+
+  // Cancels the whole rule going forward. Stops both future generation and
+  // any not-yet-started materialized occurrence (PLAN.md: "stops generating
+  // future occurrences, materialized or projected"). Deliberately leaves an
+  // already-`recording` occurrence to finish — cancelling future episodes of
+  // a season pass isn't the same request as stopping tonight's in-progress
+  // one, and PLAN.md's wording is about *future* occurrences.
+  app.delete<{ Params: { ruleId: string } }>("/recordings/recurring/:ruleId", async (request, reply) => {
+    const ruleId = Number(request.params.ruleId);
+    const [rule] = db.select().from(recurringRules).where(eq(recurringRules.id, ruleId)).all();
+    if (!rule) {
+      return reply.code(404).send({ error: "recurring rule not found" });
+    }
+    if (rule.cancelledAt) {
+      return reply.code(409).send({ error: "recurring rule already cancelled" });
     }
 
-    reply.code(204);
+    const [updatedRule] = db
+      .update(recurringRules)
+      .set({ cancelledAt: new Date(), updatedAt: new Date() })
+      .where(eq(recurringRules.id, ruleId))
+      .returning()
+      .all();
+
+    const futureScheduled = db
+      .select()
+      .from(recordings)
+      .where(and(eq(recordings.recurringRuleId, ruleId), eq(recordings.status, "scheduled")))
+      .all();
+    for (const recording of futureScheduled) {
+      db.update(recordings).set({ status: "cancelled", updatedAt: new Date() }).where(eq(recordings.id, recording.id)).run();
+    }
+
+    return { ...updatedRule, cancelledRecordings: futureScheduled.length };
   });
 
   // Range support (206 partial content) so video players can seek without
