@@ -12,13 +12,18 @@ export type AuthCheckResult = { ok: true } | { ok: false; error: string };
 // A valid response is JSON with user_info.auth === 1; invalid credentials
 // typically come back as auth: 0 rather than an HTTP error, so a 200 alone
 // doesn't mean the credentials are good.
-export async function checkProviderAuth(
-  provider: typeof providers.$inferSelect,
-): Promise<AuthCheckResult> {
-  const username = decrypt(provider.usernameEncrypted);
-  const password = decrypt(provider.passwordEncrypted);
-  const base = provider.baseUrl.replace(/\/+$/, "");
-  const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+//
+// Takes raw credentials, not a stored provider row, so it can back both
+// GET /providers/{id}/status (decrypts first, see checkProviderAuth below)
+// and POST /providers/test (tests credentials the admin just typed, before
+// they're ever saved/encrypted — see routes/providers.ts).
+export async function checkXtreamAuth(credentials: {
+  baseUrl: string;
+  username: string;
+  password: string;
+}): Promise<AuthCheckResult> {
+  const base = credentials.baseUrl.replace(/\/+$/, "");
+  const url = `${base}/player_api.php?username=${encodeURIComponent(credentials.username)}&password=${encodeURIComponent(credentials.password)}`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PROVIDER_STATUS_CHECK_TIMEOUT_MS);
@@ -40,4 +45,12 @@ export async function checkProviderAuth(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export function checkProviderAuth(provider: typeof providers.$inferSelect): Promise<AuthCheckResult> {
+  return checkXtreamAuth({
+    baseUrl: provider.baseUrl,
+    username: decrypt(provider.usernameEncrypted),
+    password: decrypt(provider.passwordEncrypted),
+  });
 }
