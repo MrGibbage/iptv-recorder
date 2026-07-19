@@ -29,6 +29,13 @@
       "when": 1784472714912,
       "tag": "0003_left_switch",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784475576328,
+      "tag": "0004_lucky_santa_claus",
+      "breakpoints": true
     }
   ]
 }

@@ -189,8 +189,13 @@ export async function recordingRoutes(app: FastifyInstance) {
     if (!recording) {
       return reply.code(404).send({ error: "recording not found" });
     }
-    if (recording.status !== "completed" || !recording.filePath) {
+    if (recording.status !== "completed") {
       return reply.code(409).send({ error: "recording is not completed" });
+    }
+    if (!recording.filePath) {
+      // Distinct from the 500 below: this is retention having done its job
+      // (see ../retention/sweep.ts), not an unexpected anomaly.
+      return reply.code(410).send({ error: "recording file has been removed by retention" });
     }
     if (!existsSync(recording.filePath)) {
       return reply.code(500).send({ error: "recording file is missing on disk" });

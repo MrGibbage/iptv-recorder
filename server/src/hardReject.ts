@@ -1,6 +1,8 @@
+import { statfsSync } from "node:fs";
 import { and, eq, gt, inArray, lt } from "drizzle-orm";
 import { db } from "./db/client.js";
 import { recordings, providers } from "./db/schema.js";
+import { ensureStorageDirectory, getStorageConfig } from "./db/settings.js";
 
 const ACTIVE_STATUSES: ("scheduled" | "recording")[] = ["scheduled", "recording"];
 
@@ -39,6 +41,15 @@ export function checkHardReject(
 ): string | null {
   if (!provider.enabled) {
     return "provider is disabled";
+  }
+
+  // PLAN.md "storage-exhaustion" hard-reject rule.
+  const storage = getStorageConfig();
+  ensureStorageDirectory(storage);
+  const stats = statfsSync(storage.directory);
+  const freeBytes = stats.bavail * stats.bsize;
+  if (freeBytes < storage.minFreeBytes) {
+    return "insufficient storage space";
   }
 
   // Only recordings whose window overlaps the requested one can affect its

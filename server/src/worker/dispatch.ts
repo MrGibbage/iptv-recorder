@@ -1,20 +1,16 @@
-import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { unlinkSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { and, eq, lte } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { providers, recordings } from "../db/schema.js";
 import { buildStreamUrl } from "./streamUrl.js";
 import { startRemux } from "./ffmpegRemux.js";
-
-// Mirrors DB_PATH's pattern in ../db/client.ts. A dedicated config/storage
-// table (location(s), min-free-space threshold) is still PLAN.md TODO3 —
-// this is a placeholder single-location default, not that design.
-const RECORDINGS_DIR = process.env.RECORDINGS_DIR ?? "./data/recordings";
-mkdirSync(RECORDINGS_DIR, { recursive: true });
+import { ensureStorageDirectory, getStorageConfig } from "../db/settings.js";
 
 interface ActiveWorker {
   process: ChildProcessWithoutNullStreams;
+  outputPath: string;
   // Set by cancelActiveWorker so the 'close' handler knows a SIGTERM was
   // intentional (DELETE /recordings/{id}) and must not overwrite the
   // 'cancelled' status that handler already set with 'failed'.
@@ -31,6 +27,20 @@ function fail(recordingId: number, reason: string): void {
     .set({ status: "failed", failureReason: reason, updatedAt: new Date() })
     .where(eq(recordings.id, recordingId))
     .run();
+}
+
+// A cancelled or failed-after-starting recording never gets file_path set,
+// but ffmpeg may have already written a partial file at outputPath — best
+// effort cleanup so aborted recordings don't silently leak disk space that
+// retention (which only ever looks at rows with file_path set) can't see.
+function deletePartialFile(outputPath: string): void {
+  try {
+    unlinkSync(outputPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
 }
 
 // PLAN.md "hands off any materialized occurrence whose start time has
@@ -62,10 +72,13 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
       continue;
     }
 
+    const storage = getStorageConfig();
+    ensureStorageDirectory(storage);
+
     // Record only what's left of the window if we're starting a bit late
     // (tick granularity), not the full original duration.
     const durationSeconds = Math.ceil((recording.endTime.getTime() - now.getTime()) / 1000);
-    const outputPath = join(RECORDINGS_DIR, `${recording.id}.mp4`);
+    const outputPath = join(storage.directory, `${recording.id}.mp4`);
     const inputUrl = buildStreamUrl(provider, recording.channelId);
 
     // Flip to 'recording' before spawning: dispatchDueRecordings queries by
@@ -76,7 +89,7 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
       .run();
 
     const { process, getStderrTail } = startRemux(inputUrl, outputPath, durationSeconds);
-    const worker: ActiveWorker = { process, cancelled: false };
+    const worker: ActiveWorker = { process, outputPath, cancelled: false };
     activeWorkers.set(recording.id, worker);
 
     process.on("close", (code, signal) => {
@@ -85,6 +98,7 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
         // DELETE /recordings/{id} already set status='cancelled'; nothing
         // to reconcile here even though the process technically "failed"
         // by exit code once SIGTERM'd.
+        deletePartialFile(outputPath);
         return;
       }
       if (code === 0) {
@@ -97,6 +111,7 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
           ? `ffmpeg terminated by signal ${signal}`
           : `ffmpeg exited with code ${code}: ${getStderrTail().trim().slice(-500)}`;
         fail(recording.id, reason);
+        deletePartialFile(outputPath);
       }
     });
   }

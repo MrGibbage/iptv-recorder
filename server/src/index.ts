@@ -4,6 +4,7 @@ import { db } from "./db/client.js";
 import { clients } from "./db/schema.js";
 import { providerRoutes } from "./routes/providers.js";
 import { recordingRoutes } from "./routes/recordings.js";
+import { configRoutes } from "./routes/config.js";
 import { startScheduler, stopScheduler } from "./scheduler/index.js";
 
 const app = Fastify({ logger: true });
@@ -19,6 +20,7 @@ app.get("/health/db", async () => {
 
 await app.register(providerRoutes);
 await app.register(recordingRoutes);
+await app.register(configRoutes);
 
 app.addHook("onClose", async () => {
   stopScheduler();
