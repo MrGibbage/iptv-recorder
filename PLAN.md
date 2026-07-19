@@ -11,7 +11,7 @@ A separate companion **scheduler app** (web service, own project) is expected to
 ## Goals
 
 - Accept recording requests (one-off and recurring) from client apps over an HTTP API.
-- Own recurring-schedule primitives (e.g. "same time, same channel, every week") — pure calendar mechanics, no content awareness required, so this keeps working even if a smarter client/scheduler app is offline.
+- Own recurring-schedule primitives (e.g. "same time, same channel, every week") — pure calendar mechanics, no content awareness required, so this keeps working even if a smarter client/scheduler app is offline. Recurring rules run indefinitely by default (cron-like, no mandatory end date) — an end date/occurrence cap is optional, not required.
 - Enforce each provider's configured max concurrent streams at request time — reject any schedule/record request that would push a provider over its limit, rather than queuing or best-effort attempting it.
 - Record IPTV streams to disk. Likely a remux (TS → fragmented MP4) rather than a raw copy or a real transcode — cheap CPU-wise, but gives a saner, seekable file than raw MPEG-TS.
 - Serve recorded files back to clients for playback. No server-side transcoding, ever.
@@ -54,15 +54,24 @@ The credential-passthrough model below (server never stores provider credentials
 Laomedeia (client)
    │  request carries a provider_id, not credentials
    ▼
-iptv-recorder API  ──schedules──▶  recording worker  ──writes──▶  disk (remuxed files)
-   │                                     │
-   │                          looks up stored credentials
-   │                          for provider_id, connects to
-   │                          that Xtream provider
+iptv-recorder API ──stores rules/occurrences──▶  DB (providers, rules, recordings)
+   │                                                       ▲
+   │                                                       │ polls every ~30-60s
+   │                                                 scheduler loop
+   │                                        (materializes due occurrences,
+   │                                         fires imminent ones)
+   │                                                       │
+   │                                                       ▼
+   │                                              recording worker ──writes──▶ disk (remuxed files)
+   │                                                       │
+   │                                          looks up stored credentials
+   │                                          for provider_id, connects to
+   │                                          that Xtream provider
    └──serves recorded file──▶  Laomedeia (client transcodes/plays)
 ```
 
-- **API service** — accepts schedule/record/list/delete requests, manages the schedule store, exposes config endpoints (including provider management).
+- **API service** — accepts schedule/record/list/delete requests, writes rules and materialized occurrences to the database, exposes config endpoints (including provider management).
+- **Scheduler engine** — an in-process background loop (not OS cron), ticking every ~30–60s against the same database as everything else. Each tick: materializes a recurring rule's next occurrence once it's within the materialization horizon (applying any skip-exception first), and hands off any materialized occurrence whose start time has arrived to the recording worker. Not OS cron — cron entries are static and would need to be rewritten on every rule create/update/delete via the API, and it has no way to represent materialization horizon, skip-exceptions, or concurrent-stream checks. Keeping this in-process means "what's scheduled" is always just a query against the same DB, no second source of truth to keep in sync. See API Design → Recurring occurrence materialization for the full model.
 - **Recording worker** — pulls from the IPTV provider at scheduled times using stored credentials, remuxes to disk, writes metadata (start/end, channel, provider used).
 - **Storage** — plain files on disk; retention policy prunes old recordings per config.
 - **Config/admin surface** — a backend settings page covering: one or more IPTV provider configs (name, Xtream URL, credentials), storage location(s), retention policy, other operational options.
@@ -86,7 +95,15 @@ Open question this raises: **how does a request indicate which configured provid
 
 ## API Design
 
-**Resource model: flat.** Recurring recordings are not a separate resource tree. `POST /recordings` accepts an optional recurrence pattern; the recorder expands it internally, and every generated occurrence (recurring or one-off) is just a normal row in the `recordings` collection, filterable by `recurring_rule_id`. This means every other endpoint (list, cancel, fetch-file) behaves identically regardless of whether a recording originated from a rule or a single request — cancelling one occurrence (e.g. because iptv-scheduler determined it's a duplicate) is always `DELETE /recordings/{id}`, never a special nested-resource call.
+**Resource model: flat.** Recurring recordings are not a separate resource tree. `POST /recordings` accepts an optional recurrence pattern; every occurrence — recurring or one-off — is addressable as a normal row in the `recordings` collection, filterable by `recurring_rule_id`. Every other endpoint (list, cancel, fetch-file) behaves identically regardless of whether a recording originated from a rule or a single request.
+
+**Recurring occurrence materialization: cron-like, not pre-expanded.** A recurring rule is a stored pattern (channel, day/time, duration, provider), evaluated the way a cron job is — the recorder computes the next fire time rather than expanding every future occurrence into rows up front. This is what makes an end date unnecessary by default: an indefinite rule costs nothing to keep around, the same way a cron entry does. `end_date`/`max_occurrences` are supported as optional fields for rules that do want a stop condition, not required.
+
+Concretely:
+- A `recordings` row is only materialized (created with real status `scheduled`) once an occurrence is imminent or has started — not the moment the rule is created.
+- Occurrences further out than that horizon are a computed projection off the rule's pattern, not stored data. `GET /recordings?recurring_rule_id={id}` can include these projected future occurrences on request, clearly distinguished from materialized ones.
+- Skipping/cancelling a single occurrence works whether or not it's been materialized yet: `POST /recordings/recurring/{rule_id}/skip` (body: the occurrence date) cancels the row if one exists, or adds a skip exception to the rule if it doesn't — mirrors the iCalendar RRULE+EXDATE pattern. `DELETE /recordings/{id}` still works directly once a row is materialized.
+- `DELETE /recordings/recurring/{rule_id}` cancels the whole rule going forward (no more occurrences generated, materialized or projected).
 
 **Auth: per-client API keys.** Every client (Lao, iptv-scheduler, any future client) gets its own key rather than a single shared secret. Requests are attributable to a specific client in logs/history — matters once more than one client is calling the API concurrently.
 
@@ -100,11 +117,12 @@ Open question this raises: **how does a request indicate which configured provid
 - `GET /providers/{id}/status` — live auth check + current active stream count vs. max
 
 *Recordings*
-- `POST /recordings` — schedule (one-off, or recurring via an optional recurrence pattern)
-- `GET /recordings` — list/filter: `provider_id`, `channel_id`, `status` (`scheduled | recording | completed | failed | cancelled`), `start_after`/`start_before`, `recurring_rule_id`
+- `POST /recordings` — schedule (one-off, or recurring via an optional recurrence pattern; recurring rules run indefinitely unless `end_date`/`max_occurrences` is set)
+- `GET /recordings` — list/filter: `provider_id`, `channel_id`, `status` (`scheduled | recording | completed | failed | cancelled`), `start_after`/`start_before`, `recurring_rule_id`, `include_projected` (also return computed-but-not-yet-materialized future occurrences of recurring rules, flagged as projected)
 - `GET /recordings/{id}` — detail
-- `DELETE /recordings/{id}` — cancel a single recording/occurrence
-- `DELETE /recordings/recurring/{rule_id}` — cancel an entire recurring rule (stops generating future occurrences)
+- `DELETE /recordings/{id}` — cancel a single, already-materialized recording/occurrence
+- `POST /recordings/recurring/{rule_id}/skip` — skip a single occurrence by date, materialized or not (cancels the row if it exists, else adds a skip exception to the rule)
+- `DELETE /recordings/recurring/{rule_id}` — cancel an entire recurring rule (stops generating future occurrences, materialized or projected)
 - `GET /recordings/{id}/file` — fetch the completed file
 
 *Config*
@@ -130,7 +148,7 @@ Open question this raises: **how does a request indicate which configured provid
 ## Open Items
 
 - [ ] **TODO1:** Design provider settings page/API (add/edit/remove provider, `provider_id` assignment, max-concurrent-streams field).
-- [ ] **TODO2:** Design recurring-schedule primitive (rule shape, occurrence expansion, cancel/skip a single occurrence).
+- [ ] **TODO2:** Design exact recurring-rule schema (pattern fields, optional `end_date`/`max_occurrences`, skip-exception list) and the materialization horizon (how far ahead of an occurrence's start time the recorder creates its `recordings` row).
 - [ ] **TODO1:** Decide host (docker-server vs smavm) based on available storage.
 - [ ] **TODO2:** Decide remux vs raw storage format.
 - [ ] **TODO2:** Decide how stored provider credentials are secured at rest.
