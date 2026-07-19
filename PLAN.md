@@ -12,7 +12,7 @@ A separate companion **scheduler app** (web service, own project) is expected to
 
 - Accept recording requests (one-off and recurring) from client apps over an HTTP API.
 - Own recurring-schedule primitives (e.g. "same time, same channel, every week") — pure calendar mechanics, no content awareness required, so this keeps working even if a smarter client/scheduler app is offline. Recurring rules run indefinitely by default (cron-like, no mandatory end date) — an end date/occurrence cap is optional, not required.
-- Enforce each provider's configured max concurrent streams at request time — reject any schedule/record request that would push a provider over its limit, rather than queuing or best-effort attempting it.
+- Hard-reject schedule/record requests at request time (never queue, never best-effort attempt) when: a provider's configured max concurrent streams would be exceeded; available disk space is already below a configured minimum-free-space threshold; or the target provider is disabled/paused.
 - Record IPTV streams to disk. Likely a remux (TS → fragmented MP4) rather than a raw copy or a real transcode — cheap CPU-wise, but gives a saner, seekable file than raw MPEG-TS.
 - Serve recorded files back to clients for playback. No server-side transcoding, ever.
 - Expose a config surface (see below) for provider accounts, storage locations, and retention policy.
@@ -91,6 +91,8 @@ Decided: the service **does** store IPTV provider credentials server-side, confi
 
 Provider setup also requires a **max concurrent streams** value (matches the limit most Xtream provider accounts enforce). The recorder tracks active streams per provider and rejects any new schedule/record request that would exceed it — a hard rejection, not a queue.
 
+Provider setup also includes an **enabled** flag (default on). A provider can be paused without deleting it — deleting orphans its existing schedules (see Provider delete cascade in Open Questions), pausing does not. Any new schedule/record request against a disabled provider is rejected the same way, at request time.
+
 Open question this raises: **how does a request indicate which configured provider to use?** Leaning toward having Lao pass a `provider_id` explicitly with every request — Lao is already the one presenting the channel/guide UI, so it already knows which provider a given channel came from. The alternative (server matches/fails-over across providers automatically) would only matter if the same channel exists on multiple configured providers, which isn't a case that exists yet — not worth designing for until it does.
 
 ## API Design
@@ -110,11 +112,11 @@ Concretely:
 **Endpoints (draft):**
 
 *Providers*
-- `POST /providers` — add (name, Xtream base URL, credentials, `max_concurrent_streams`)
+- `POST /providers` — add (name, Xtream base URL, credentials, `max_concurrent_streams`, `enabled` (default true))
 - `GET /providers` / `GET /providers/{id}` — list/detail, credentials redacted in the response
-- `PUT /providers/{id}` — update
+- `PUT /providers/{id}` — update, including toggling `enabled`
 - `DELETE /providers/{id}` — remove (cascade behavior TBD, see Open Questions)
-- `GET /providers/{id}/status` — live auth check + current active stream count vs. max
+- `GET /providers/{id}/status` — live auth check + current active stream count vs. max + `enabled` state
 
 *Recordings*
 - `POST /recordings` — schedule (one-off, or recurring via an optional recurrence pattern; recurring rules run indefinitely unless `end_date`/`max_occurrences` is set)
@@ -126,7 +128,7 @@ Concretely:
 - `GET /recordings/{id}/file` — fetch the completed file
 
 *Config*
-- `GET` / `PUT /config/storage` — storage location(s)
+- `GET` / `PUT /config/storage` — storage location(s) and minimum-free-space threshold (used for the storage-exhaustion rejection check)
 - `GET` / `PUT /config/retention` — retention policy
 
 *Clients / API keys*
@@ -142,12 +144,12 @@ Concretely:
 - **Provider delete cascade:** does `DELETE /providers/{id}` block if there are future scheduled recordings against it, or cascade-cancel them?
 - **API key rotation:** `POST /clients` issuance is decided as admin-initiated only (no self-registration endpoint from the client side — same passive-downloader relationship as SABnzbd/Sonarr: the recorder never reaches out to or "discovers" a scheduler, it just issues a key that gets pasted into whatever client's config). Rotation flow specifically (revoke + reissue vs. in-place key refresh) still TBD.
 - **Conflict handling:** what happens when two scheduled recordings overlap on the *same channel*? (Concurrent-stream limit across different channels is now decided — hard rejection at request time.)
-- **Rejection UX:** when a request is rejected for exceeding concurrent-stream limits, what does the client see — just a 4xx with a reason, or does the recorder suggest alternatives (e.g. next available slot)?
+- **Rejection UX:** when a request is rejected (concurrent-stream limit, storage exhaustion, or disabled provider), what does the client see — just a 4xx with a reason, or does the recorder suggest alternatives (e.g. next available slot)?
 - **Credential storage security:** provider credentials at rest need to be encrypted/secured on disk, not plaintext config — mirrors the same concern Lao's own docs raise about not writing credentials to disk in logs.
 
 ## Open Items
 
-- [ ] **TODO1:** Design provider settings page/API (add/edit/remove provider, `provider_id` assignment, max-concurrent-streams field).
+- [ ] **TODO1:** Design provider settings page/API (add/edit/remove provider, `provider_id` assignment, max-concurrent-streams field, `enabled` toggle).
 - [ ] **TODO2:** Design exact recurring-rule schema (pattern fields, optional `end_date`/`max_occurrences`, skip-exception list) and the materialization horizon (how far ahead of an occurrence's start time the recorder creates its `recordings` row).
 - [ ] **TODO1:** Decide host (docker-server vs smavm) based on available storage.
 - [ ] **TODO2:** Decide remux vs raw storage format.
@@ -155,4 +157,4 @@ Concretely:
 - [ ] **TODO2:** Decide provider-delete cascade behavior and API key issuance/rotation flow.
 - [ ] **TODO1:** Add `.gitignore` for real config/secrets + a placeholder `.env.example` before any real config file is created.
 - [ ] **TODO3:** Design exact request/response schemas and error shapes for the drafted endpoints.
-- [ ] **TODO3:** Design retention policy config (TTL vs cap vs per-channel rules).
+- [ ] **TODO3:** Design retention policy config (TTL vs cap vs per-channel rules) and the minimum-free-space threshold used for the storage-exhaustion rejection check.
