@@ -10,6 +10,19 @@ import { configRoutes } from "./routes/config.js";
 import { clientRoutes } from "./routes/clients.js";
 import { startScheduler, stopScheduler } from "./scheduler/index.js";
 
+// recurring_rules.startMinuteOfDay has no per-rule timezone field (PLAN.md
+// "single-instance, single-timezone deployment") — pinned to UTC via
+// server/.env's TZ=UTC rather than left to whatever the host happens to be
+// set to. Failing fast here turns a silent, host-dependent shift in what
+// every recurring rule's schedule actually means into a boot-time error
+// instead of a support puzzle.
+const serverTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+if (serverTimeZone !== "UTC") {
+  throw new Error(
+    `Server timezone must be UTC (recurring_rules.startMinuteOfDay assumes it), got "${serverTimeZone}". Set TZ=UTC in server/.env.`,
+  );
+}
+
 const app = Fastify({ logger: true });
 
 // PLAN.md TODO4 — OpenAPI docs, generated from the same JSON-schema body/
