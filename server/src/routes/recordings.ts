@@ -1,10 +1,12 @@
 import type { FastifyInstance } from "fastify";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import { and, eq, gte, lte } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { providers, recordings } from "../db/schema.js";
 import { requireApiKey } from "../auth.js";
 import { checkHardReject } from "../hardReject.js";
 import { cancelActiveWorker } from "../worker/dispatch.js";
+import { parseRange } from "../httpRange.js";
 
 const RECORDING_STATUSES = ["scheduled", "recording", "completed", "failed", "cancelled"] as const;
 type RecordingStatus = (typeof RECORDING_STATUSES)[number];
@@ -176,5 +178,43 @@ export async function recordingRoutes(app: FastifyInstance) {
     }
 
     reply.code(204);
+  });
+
+  // Range support (206 partial content) so video players can seek without
+  // downloading from the start each time — see PLAN.md "Serve recorded
+  // files back to clients for playback."
+  app.get<{ Params: { id: string } }>("/recordings/:id/file", async (request, reply) => {
+    const id = Number(request.params.id);
+    const [recording] = db.select().from(recordings).where(eq(recordings.id, id)).all();
+    if (!recording) {
+      return reply.code(404).send({ error: "recording not found" });
+    }
+    if (recording.status !== "completed" || !recording.filePath) {
+      return reply.code(409).send({ error: "recording is not completed" });
+    }
+    if (!existsSync(recording.filePath)) {
+      return reply.code(500).send({ error: "recording file is missing on disk" });
+    }
+
+    const { size } = statSync(recording.filePath);
+    const range = parseRange(request.headers.range, size);
+
+    reply.header("Accept-Ranges", "bytes");
+    reply.header("Content-Type", "video/mp4");
+
+    if (range === "unsatisfiable") {
+      reply.header("Content-Range", `bytes */${size}`);
+      return reply.code(416).send();
+    }
+
+    if (range === null) {
+      reply.header("Content-Length", size);
+      return reply.send(createReadStream(recording.filePath));
+    }
+
+    reply.code(206);
+    reply.header("Content-Range", `bytes ${range.start}-${range.end}/${size}`);
+    reply.header("Content-Length", range.end - range.start + 1);
+    return reply.send(createReadStream(recording.filePath, { start: range.start, end: range.end }));
   });
 }
