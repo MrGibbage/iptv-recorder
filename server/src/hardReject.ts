@@ -38,6 +38,7 @@ export function checkHardReject(
   provider: typeof providers.$inferSelect,
   startTime: Date,
   endTime: Date,
+  channelId: string,
 ): string | null {
   if (!provider.enabled) {
     return "provider is disabled";
@@ -52,10 +53,13 @@ export function checkHardReject(
     return "insufficient storage space";
   }
 
-  // Only recordings whose window overlaps the requested one can affect its
-  // peak concurrency — recordings outside that window are irrelevant.
+  // Only recordings whose window overlaps the requested one can affect
+  // either check below — recordings outside that window are irrelevant to
+  // both. channelId is opaque per-provider (PLAN.md "the recorder has no
+  // channel/EPG table of its own"), so overlap is scoped to this provider
+  // regardless of which check is using it.
   const overlapping = db
-    .select({ startTime: recordings.startTime, endTime: recordings.endTime })
+    .select({ channelId: recordings.channelId, startTime: recordings.startTime, endTime: recordings.endTime })
     .from(recordings)
     .where(
       and(
@@ -66,6 +70,17 @@ export function checkHardReject(
       ),
     )
     .all();
+
+  // PLAN.md "Conflict handling" — decided 2026-07-19: first-in-wins, hard
+  // reject. Two recordings on the *same* channel can never usefully overlap
+  // (there's only one stream to pull from a given channel at a time) — this
+  // is a correctness rule, not a capacity one, so it's checked regardless of
+  // maxConcurrentStreams headroom. A well-designed scheduler/client should
+  // never generate this in the first place, but the recorder can't assume
+  // that, so it's enforced at the same point every other hard-reject rule is.
+  if (overlapping.some((r) => r.channelId === channelId)) {
+    return "conflicts with an existing recording on this channel";
+  }
 
   const peak = maxConcurrentOverlap([
     ...overlapping.map((r) => ({ start: r.startTime.getTime(), end: r.endTime.getTime() })),

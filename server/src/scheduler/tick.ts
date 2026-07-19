@@ -77,7 +77,7 @@ function materializeIfDue(rule: RecurringRule, now: Date): void {
     return;
   }
 
-  const rejection = checkHardReject(provider, start, end);
+  const rejection = checkHardReject(provider, start, end, rule.channelId);
   if (!rejection) {
     db.insert(recordings)
       .values({

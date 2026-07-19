@@ -290,10 +290,11 @@ export async function recordingRoutes(app: FastifyInstance) {
         const recurrence = body.recurrence!;
 
         // Only what's checkable without a concrete time window — the
-        // per-occurrence concurrent-stream/storage checks (checkHardReject)
-        // already run again at materialization time for each occurrence via
-        // the scheduler tick, since those depend on conditions at the time
-        // an occurrence actually fires, not at rule-creation time.
+        // per-occurrence concurrent-stream/storage/same-channel-conflict
+        // checks (checkHardReject) already run again at materialization
+        // time for each occurrence via the scheduler tick, since those
+        // depend on conditions at the time an occurrence actually fires,
+        // not at rule-creation time.
         if (!provider.enabled) {
           return reply.code(409).send({ error: "provider is disabled" });
         }
@@ -335,7 +336,7 @@ export async function recordingRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "endTime must be after startTime" });
       }
 
-      const rejection = checkHardReject(provider, startTime, endTime);
+      const rejection = checkHardReject(provider, startTime, endTime, body.channelId);
       if (rejection) {
         return reply.code(409).send({ error: rejection });
       }
