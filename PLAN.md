@@ -85,6 +85,17 @@ This repo is **public**. That constrains how provider credentials, API keys, and
 - Real credentials, API keys, or tokens for this project should not be pasted into Claude chat sessions either — describe config by shape/placeholder when asking for help, not by real value. Chat history isn't the right place for secrets any more than the repo is.
 - This is separate from the encryption-at-rest question in Credentials Model below — that's about how the *running service* stores what it's holding; this is about what never enters version control or conversation history in the first place.
 
+## Tech Stack
+
+Decided:
+- **Backend:** Node.js + TypeScript, Fastify for the HTTP layer (schema validation/serialization fits the drafted endpoint shapes; lighter than Express for a small service).
+- **Database:** SQLite via Drizzle ORM + better-sqlite3 — typed, SQL-like, has a real migration story without Prisma's generated-client/engine overhead.
+- **Settings UI:** React + Vite SPA, served as static files (built and hosted alongside/by the API service). Dev-mode Vite proxies `/api` to the Fastify server.
+- **Package manager:** pnpm (workspace with `server/` + `web/` packages).
+- **Host:** docker-server.
+
+**Repo layout:** pnpm workspace root (`package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`) with `server/` (Fastify + Drizzle, entry `server/src/index.ts`) and `web/` (Vite React app) as workspace packages. Each package's own `.env`/`.env.example` lives inside `server/` — `dotenv/config`'s default lookup is relative to `process.cwd()`, which is the package directory (not the repo root) when run via `pnpm --filter server dev`; a root-level `.env` is silently never loaded. Scaffolded and verified booting end-to-end (health check + DB round-trip + Vite API proxy) 2026-07-19.
+
 ## Credentials Model
 
 Decided: the service **does** store IPTV provider credentials server-side, configured through a settings page. One or more providers can be added; each gets a `provider_id`. This solves the scheduled-recording problem from the earlier draft — the service can trigger a recording on schedule without Lao needing to be open or reachable at that moment.
@@ -137,7 +148,6 @@ Concretely:
 
 ## Open Questions
 
-- **Host:** docker-server vs smavm — which has the storage headroom for recordings?
 - **Provider selection:** confirm `provider_id` passed explicitly by the client is sufficient, vs. needing server-side matching later.
 - **Remux vs raw store:** confirm remux-on-record is the right call vs. storing raw TS as-is.
 - **Retention policy shape:** per-recording TTL? Total storage cap with LRU eviction? Per-channel rules?
@@ -151,10 +161,9 @@ Concretely:
 
 - [ ] **TODO1:** Design provider settings page/API (add/edit/remove provider, `provider_id` assignment, max-concurrent-streams field, `enabled` toggle).
 - [ ] **TODO2:** Design exact recurring-rule schema (pattern fields, optional `end_date`/`max_occurrences`, skip-exception list) and the materialization horizon (how far ahead of an occurrence's start time the recorder creates its `recordings` row).
-- [ ] **TODO1:** Decide host (docker-server vs smavm) based on available storage.
 - [ ] **TODO2:** Decide remux vs raw storage format.
 - [ ] **TODO2:** Decide how stored provider credentials are secured at rest.
 - [ ] **TODO2:** Decide provider-delete cascade behavior and API key issuance/rotation flow.
-- [ ] **TODO1:** Add `.gitignore` for real config/secrets + a placeholder `.env.example` before any real config file is created.
+- [x] **TODO1:** Add `.gitignore` for real config/secrets + a placeholder `.env.example` before any real config file is created. Done as part of scaffolding — `.env.example` lives in `server/.env.example` (not repo root), since `dotenv/config`'s default lookup is relative to `process.cwd()`, which is `server/` when run via `pnpm --filter server`.
 - [ ] **TODO3:** Design exact request/response schemas and error shapes for the drafted endpoints.
 - [ ] **TODO3:** Design retention policy config (TTL vs cap vs per-channel rules) and the minimum-free-space threshold used for the storage-exhaustion rejection check.
