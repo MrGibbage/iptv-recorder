@@ -1,9 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { eq } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { providers, recordings } from "../db/schema.js";
 import { requireApiKey } from "../auth.js";
 import { checkHardReject } from "../hardReject.js";
+import { cancelActiveWorker } from "../worker/dispatch.js";
+
+const RECORDING_STATUSES = ["scheduled", "recording", "completed", "failed", "cancelled"] as const;
+type RecordingStatus = (typeof RECORDING_STATUSES)[number];
 
 const createBodySchema = {
   type: "object",
@@ -22,6 +26,28 @@ type CreateBody = {
   channelId: string;
   startTime: string;
   endTime: string;
+};
+
+const listQuerySchema = {
+  type: "object",
+  properties: {
+    providerId: { type: "integer" },
+    channelId: { type: "string" },
+    status: { type: "string", enum: RECORDING_STATUSES },
+    startAfter: { type: "string" },
+    startBefore: { type: "string" },
+    recurringRuleId: { type: "integer" },
+  },
+  additionalProperties: false,
+} as const;
+
+type ListQuery = {
+  providerId?: number;
+  channelId?: string;
+  status?: RecordingStatus;
+  startAfter?: string;
+  startBefore?: string;
+  recurringRuleId?: number;
 };
 
 // One-off recordings only for now. Recurring-pattern creation needs a
@@ -73,4 +99,82 @@ export async function recordingRoutes(app: FastifyInstance) {
       return created;
     },
   );
+
+  // include_projected (computed-but-not-yet-materialized future occurrences
+  // of recurring rules) is deferred — it needs its own multi-day projection
+  // logic distinct from the scheduler's "is today due" check. This only
+  // lists rows that already exist.
+  app.get<{ Querystring: ListQuery }>(
+    "/recordings",
+    { schema: { querystring: listQuerySchema } },
+    async (request, reply) => {
+      const q = request.query;
+      const conditions = [];
+
+      if (q.providerId !== undefined) conditions.push(eq(recordings.providerId, q.providerId));
+      if (q.channelId !== undefined) conditions.push(eq(recordings.channelId, q.channelId));
+      if (q.status !== undefined) conditions.push(eq(recordings.status, q.status));
+      if (q.recurringRuleId !== undefined) conditions.push(eq(recordings.recurringRuleId, q.recurringRuleId));
+
+      if (q.startAfter !== undefined) {
+        const d = new Date(q.startAfter);
+        if (Number.isNaN(d.getTime())) {
+          return reply.code(400).send({ error: "startAfter must be a valid date" });
+        }
+        conditions.push(gte(recordings.startTime, d));
+      }
+      if (q.startBefore !== undefined) {
+        const d = new Date(q.startBefore);
+        if (Number.isNaN(d.getTime())) {
+          return reply.code(400).send({ error: "startBefore must be a valid date" });
+        }
+        conditions.push(lte(recordings.startTime, d));
+      }
+
+      return conditions.length > 0
+        ? db
+            .select()
+            .from(recordings)
+            .where(and(...conditions))
+            .all()
+        : db.select().from(recordings).all();
+    },
+  );
+
+  app.get<{ Params: { id: string } }>("/recordings/:id", async (request, reply) => {
+    const id = Number(request.params.id);
+    const [row] = db.select().from(recordings).where(eq(recordings.id, id)).all();
+    if (!row) {
+      return reply.code(404).send({ error: "recording not found" });
+    }
+    return row;
+  });
+
+  // Soft-cancel (status='cancelled'), not a row delete — a cancelled
+  // occurrence stays visible in history/list queries like any other
+  // terminal status, consistent with PLAN.md's flat resource model.
+  app.delete<{ Params: { id: string } }>("/recordings/:id", async (request, reply) => {
+    const id = Number(request.params.id);
+    const [existing] = db.select().from(recordings).where(eq(recordings.id, id)).all();
+    if (!existing) {
+      return reply.code(404).send({ error: "recording not found" });
+    }
+    if (existing.status !== "scheduled" && existing.status !== "recording") {
+      return reply.code(409).send({ error: "recording already finished" });
+    }
+
+    // Set status before touching the worker: cancelActiveWorker's process
+    // 'close' handler checks a flag it sets itself, not this row, so there's
+    // no race between this write and that handler either way.
+    db.update(recordings)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(eq(recordings.id, id))
+      .run();
+
+    if (existing.status === "recording") {
+      cancelActiveWorker(id);
+    }
+
+    reply.code(204);
+  });
 }
