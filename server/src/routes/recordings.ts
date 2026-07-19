@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { and, eq, gt, inArray, lt } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { providers, recordings } from "../db/schema.js";
 import { requireApiKey } from "../auth.js";
+import { checkHardReject } from "../hardReject.js";
 
 const createBodySchema = {
   type: "object",
@@ -22,32 +23,6 @@ type CreateBody = {
   startTime: string;
   endTime: string;
 };
-
-const ACTIVE_STATUSES: ("scheduled" | "recording")[] = ["scheduled", "recording"];
-
-// Sweep-line max concurrency across a set of [start, end) intervals. Needed
-// because a naive pairwise/count check isn't enough once more than two
-// recordings can overlap the same instant — this finds the true peak
-// simultaneous-stream count (PLAN.md "Enforce each provider's configured
-// max concurrent streams at request time").
-function maxConcurrentOverlap(intervals: { start: number; end: number }[]): number {
-  const events: { t: number; delta: number }[] = [];
-  for (const { start, end } of intervals) {
-    events.push({ t: start, delta: 1 });
-    events.push({ t: end, delta: -1 });
-  }
-  // Ends before starts at equal timestamps: a recording ending exactly when
-  // another begins doesn't count as concurrent (half-open [start, end)).
-  events.sort((a, b) => a.t - b.t || a.delta - b.delta);
-
-  let running = 0;
-  let peak = 0;
-  for (const event of events) {
-    running += event.delta;
-    peak = Math.max(peak, running);
-  }
-  return peak;
-}
 
 // One-off recordings only for now. Recurring-pattern creation needs a
 // next-occurrence calculator and horizon-based materialization (the
@@ -78,33 +53,10 @@ export async function recordingRoutes(app: FastifyInstance) {
       if (!provider) {
         return reply.code(404).send({ error: "provider not found" });
       }
-      // PLAN.md "disabled provider" hard-reject rule.
-      if (!provider.enabled) {
-        return reply.code(409).send({ error: "provider is disabled" });
-      }
 
-      // Only recordings whose window overlaps the requested one can affect
-      // its peak concurrency — recordings outside that window are irrelevant.
-      const overlapping = db
-        .select({ startTime: recordings.startTime, endTime: recordings.endTime })
-        .from(recordings)
-        .where(
-          and(
-            eq(recordings.providerId, body.providerId),
-            inArray(recordings.status, ACTIVE_STATUSES),
-            lt(recordings.startTime, endTime),
-            gt(recordings.endTime, startTime),
-          ),
-        )
-        .all();
-
-      const peak = maxConcurrentOverlap([
-        ...overlapping.map((r) => ({ start: r.startTime.getTime(), end: r.endTime.getTime() })),
-        { start: startTime.getTime(), end: endTime.getTime() },
-      ]);
-      // PLAN.md "concurrent stream limit" hard-reject rule.
-      if (peak > provider.maxConcurrentStreams) {
-        return reply.code(409).send({ error: "would exceed provider's max concurrent streams" });
+      const rejection = checkHardReject(provider, startTime, endTime);
+      if (rejection) {
+        return reply.code(409).send({ error: rejection });
       }
 
       const [created] = db
