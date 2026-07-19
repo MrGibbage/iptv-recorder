@@ -2,11 +2,16 @@ import type { recurringRules } from "../db/schema.js";
 
 type RecurringRule = typeof recurringRules.$inferSelect;
 
-// Server-local time throughout (single-instance, single-timezone deployment
-// — see recurring_rules.startMinuteOfDay in ../db/schema.ts). Deliberately
+// "Local" time throughout (single-instance, single-timezone deployment —
+// see recurring_rules.startMinuteOfDay in ../db/schema.ts) — deliberately
 // uses local-time Date getters/setters (getDay, setHours, ...), never the
 // UTC ones, so "today" and "midnight" agree with the rule's own timezone
-// assumption.
+// assumption. The server's process timezone is pinned to UTC (TZ=UTC,
+// asserted at boot in src/index.ts), so in practice "local" here always
+// means UTC — kept as local-time calls rather than switched to
+// getUTCDay/setUTCHours so this code doesn't silently start meaning
+// something different if that pin is ever loosened to a real per-rule
+// timezone.
 
 // bit 0 = Monday .. bit 6 = Sunday (see recurring_rules.daysOfWeek).
 export function isDayActive(daysOfWeek: number, day: Date): boolean {

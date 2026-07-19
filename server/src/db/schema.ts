@@ -48,8 +48,10 @@ export const recurringRules = sqliteTable("recurring_rules", {
   channelId: text("channel_id").notNull(),
   // Bitmask of days this rule fires on: bit 0 = Monday .. bit 6 = Sunday.
   daysOfWeek: integer("days_of_week").notNull(),
-  // Minutes since midnight, server-local time (0-1439) — single-instance,
-  // single-timezone deployment, so no explicit timezone field.
+  // Minutes since midnight, UTC (0-1439) — single-instance,
+  // single-timezone deployment, so no explicit timezone field. Pinned to
+  // UTC via TZ=UTC (server/.env, asserted at boot in src/index.ts) rather
+  // than left to whatever the host happens to be set to.
   startMinuteOfDay: integer("start_minute_of_day").notNull(),
   durationMinutes: integer("duration_minutes").notNull(),
   // Optional stop conditions — a rule with neither runs indefinitely.

@@ -18,8 +18,12 @@ const recurrenceSchema = {
   required: ["daysOfWeek", "startMinuteOfDay", "durationMinutes"],
   properties: {
     // Bitmask, bit 0 = Monday .. bit 6 = Sunday (recurring_rules.daysOfWeek).
+    // Both daysOfWeek and startMinuteOfDay are in UTC — the server has no
+    // per-rule timezone field (single-instance, single-timezone deployment,
+    // pinned to TZ=UTC), so a client must convert from the user's local
+    // time itself before sending this.
     daysOfWeek: { type: "integer", minimum: 1, maximum: 127 },
-    startMinuteOfDay: { type: "integer", minimum: 0, maximum: 1439 },
+    startMinuteOfDay: { type: "integer", minimum: 0, maximum: 1439, description: "Minutes since midnight, UTC." },
     durationMinutes: { type: "integer", minimum: 1 },
     endDate: { type: "string", minLength: 1 },
     maxOccurrences: { type: "integer", minimum: 1 },
@@ -153,7 +157,7 @@ const recurringRuleSchema = {
     providerId: { type: "integer" },
     channelId: { type: "string" },
     daysOfWeek: { type: "integer", description: "Bitmask: bit 0 = Monday .. bit 6 = Sunday." },
-    startMinuteOfDay: { type: "integer", description: "Minutes since midnight, server-local time." },
+    startMinuteOfDay: { type: "integer", description: "Minutes since midnight, UTC (server is pinned to TZ=UTC; see index.ts's boot-time check)." },
     durationMinutes: { type: "integer" },
     endDate: { type: "string", nullable: true, format: "date-time" },
     maxOccurrences: { type: "integer", nullable: true },
@@ -176,7 +180,7 @@ const recurringRuleCancelResultSchema = {
     providerId: { type: "integer" },
     channelId: { type: "string" },
     daysOfWeek: { type: "integer" },
-    startMinuteOfDay: { type: "integer" },
+    startMinuteOfDay: { type: "integer", description: "Minutes since midnight, UTC." },
     durationMinutes: { type: "integer" },
     endDate: { type: "string", nullable: true, format: "date-time" },
     maxOccurrences: { type: "integer", nullable: true },
