@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { createReadStream, existsSync, statSync } from "node:fs";
+import { extname } from "node:path";
 import { and, eq, gte, isNotNull, isNull, lte } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { providers, recordings, recurringRules, recurringRuleSkips } from "../db/schema.js";
@@ -12,6 +13,17 @@ import { projectOccurrences } from "../scheduler/projection.js";
 
 const RECORDING_STATUSES = ["scheduled", "recording", "completed", "failed", "cancelled"] as const;
 type RecordingStatus = (typeof RECORDING_STATUSES)[number];
+
+// GET /recordings/:id/file's Content-Type, keyed by the recorded file's
+// extension rather than hardcoded to one format — the worker has written
+// MPEG-TS (.ts) since 2026-07-20 (see ffmpegRemux.ts), but recordings made
+// before that switch are still fragmented MP4 (.mp4) and remain on disk
+// until retention clears them, so both must keep working.
+const CONTENT_TYPE_BY_EXTENSION: Record<string, string> = {
+  ".ts": "video/mp2t",
+  ".mp4": "video/mp4",
+};
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 const recurrenceSchema = {
   type: "object",
@@ -673,9 +685,9 @@ export async function recordingRoutes(app: FastifyInstance) {
       schema: {
         tags: ["recordings"],
         summary: "Download the recorded file",
-        description: "Supports HTTP Range requests (single range only) for seeking. No 200/206 schema declared here — the body is a raw video/mp4 stream, not JSON.",
-        // No 200/206/416 entries: 200/206 are a raw video/mp4 stream, not
-        // JSON, and 416 (like the 204s elsewhere in this file) has no body.
+        description: "Supports HTTP Range requests (single range only) for seeking. No 200/206 schema declared here — the body is a raw video stream (Content-Type varies by recorded format, see CONTENT_TYPE_BY_EXTENSION), not JSON.",
+        // No 200/206/416 entries: 200/206 are a raw video stream, not JSON,
+        // and 416 (like the 204s elsewhere in this file) has no body.
         response: { 404: { $ref: "Error#" }, 409: { $ref: "Error#" }, 410: { $ref: "Error#" }, 500: { $ref: "Error#" } },
       },
     },
@@ -701,7 +713,7 @@ export async function recordingRoutes(app: FastifyInstance) {
       const range = parseRange(request.headers.range, size);
 
       reply.header("Accept-Ranges", "bytes");
-      reply.header("Content-Type", "video/mp4");
+      reply.header("Content-Type", CONTENT_TYPE_BY_EXTENSION[extname(recording.filePath)] ?? DEFAULT_CONTENT_TYPE);
 
       if (range === "unsatisfiable") {
         reply.header("Content-Range", `bytes */${size}`);
