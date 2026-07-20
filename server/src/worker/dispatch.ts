@@ -78,7 +78,7 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
     // Record only what's left of the window if we're starting a bit late
     // (tick granularity), not the full original duration.
     const durationSeconds = Math.ceil((recording.endTime.getTime() - now.getTime()) / 1000);
-    const outputPath = join(storage.directory, `${recording.id}.mp4`);
+    const outputPath = join(storage.directory, `${recording.id}.ts`);
     const inputUrl = buildStreamUrl(provider, recording.channelId);
 
     // Flip to 'recording' before spawning: dispatchDueRecordings queries by

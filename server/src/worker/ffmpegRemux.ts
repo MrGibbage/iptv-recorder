@@ -7,12 +7,21 @@ export interface RemuxHandle {
   getStderrTail: () => string;
 }
 
-// Remux only, no re-encode (PLAN.md "Likely a remux (TS -> fragmented MP4)
-// rather than a raw copy or a real transcode — cheap CPU-wise, but gives a
-// saner, seekable file than raw MPEG-TS", decided 2026-07-19). The
-// frag_keyframe+empty_moov flags produce a file that's valid even if ffmpeg
-// is killed mid-recording, since MP4's moov atom never needs a final seek-
-// back-and-write pass the way a plain `-movflags faststart` file would.
+// Remux only, no re-encode, into MPEG-TS (revised 2026-07-20 — see PLAN.md
+// "Remux vs raw store" / Recording worker for the full history). Originally
+// this wrote fragmented MP4 (`-f mp4 -movflags +frag_keyframe+empty_moov+
+// default_base_moof`), but that was only ever verified against a synthetic
+// lavfi testsrc/sine source. Against a real Xtream channel it failed on
+// ADTS-framed AAC audio ("Malformed AAC bitstream ... use the audio
+// bitstream filter 'aac_adtstoasc'") — MP4 requires AAC in raw/LATM framing,
+// not ADTS, and a per-codec bitstream-filter fix would only have deferred
+// the same class of failure to the next channel carrying MP2 or AC-3/E-AC-3
+// (MP2 has no defined MP4 sample entry at all; ffmpeg refuses it outright).
+// The source stream is already MPEG-TS (Xtream's `/live/.../id.ts`), so
+// `-c copy` into `-f mpegts` needs zero bitstream translation for any
+// codec combination a provider might send. Crash-safety is unaffected: TS
+// packets are self-contained (no moov/moof to finalize), the same property
+// the old movflags were approximating for MP4.
 export function startRemux(inputUrl: string, outputPath: string, durationSeconds: number): RemuxHandle {
   const process = spawn("ffmpeg", [
     "-y",
@@ -23,9 +32,7 @@ export function startRemux(inputUrl: string, outputPath: string, durationSeconds
     "-c",
     "copy",
     "-f",
-    "mp4",
-    "-movflags",
-    "+frag_keyframe+empty_moov+default_base_moof",
+    "mpegts",
     outputPath,
   ]);
 

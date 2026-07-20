@@ -130,7 +130,8 @@ export function Recordings() {
   async function handleDownload(recording: Recording) {
     setRowError(undefined);
     try {
-      await downloadFile(`/recordings/${recording.id}/file`, `${recording.channelId}-${recording.id}.mp4`);
+      const extension = recording.filePath?.split(".").pop() ?? "ts";
+      await downloadFile(`/recordings/${recording.id}/file`, `${recording.channelId}-${recording.id}.${extension}`);
     } catch (err) {
       setRowError(err instanceof ApiError ? err.message : String(err));
     }
