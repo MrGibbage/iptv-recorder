@@ -6,7 +6,7 @@ import { db } from "../db/client.js";
 import { providers, recordings, recurringRules, recurringRuleSkips } from "../db/schema.js";
 import { requireApiKey } from "../auth.js";
 import { checkHardReject } from "../hardReject.js";
-import { cancelActiveWorker } from "../worker/dispatch.js";
+import { cancelActiveWorker, deleteRecordingFile } from "../worker/dispatch.js";
 import { parseRange } from "../httpRange.js";
 import { occurrenceWindowForDay } from "../scheduler/occurrence.js";
 import { projectOccurrences } from "../scheduler/projection.js";
@@ -474,18 +474,24 @@ export async function recordingRoutes(app: FastifyInstance) {
     },
   );
 
-  // Soft-cancel (status='cancelled'), not a row delete — a cancelled
-  // occurrence stays visible in history/list queries like any other
-  // terminal status, consistent with PLAN.md's flat resource model.
+  // Two different operations behind one verb, split by status: an active
+  // (scheduled/recording) occurrence gets the soft-cancel (status=
+  // 'cancelled', row kept — consistent with PLAN.md's flat resource model,
+  // same as cancelRecordingRow's other caller below). A terminal one
+  // (completed/failed/cancelled) has nothing left to "cancel", so this
+  // hard-deletes it instead — row and file (if any) — since without this
+  // a failed recording had no way to ever be removed (retention's TTL
+  // sweep only ever looks at 'completed' rows, see ../retention/sweep.ts).
   app.delete<{ Params: { id: string } }>(
     "/recordings/:id",
     {
       schema: {
         tags: ["recordings"],
-        summary: "Cancel a recording",
+        summary: "Cancel or delete a recording",
+        description: "Cancels an in-progress/scheduled recording (soft, row kept), or hard-deletes a completed/failed/cancelled one (row and file, if any).",
         // No 204 entry: it has no body, same reasoning as DELETE
         // /providers/{id} in ./providers.ts.
-        response: { 404: { $ref: "Error#" }, 409: { $ref: "Error#" } },
+        response: { 404: { $ref: "Error#" } },
       },
     },
     async (request, reply) => {
@@ -494,10 +500,15 @@ export async function recordingRoutes(app: FastifyInstance) {
       if (!existing) {
         return reply.code(404).send({ error: "recording not found" });
       }
-      if (!cancelRecordingRow(existing)) {
-        return reply.code(409).send({ error: "recording already finished" });
+      if (existing.status === "scheduled" || existing.status === "recording") {
+        cancelRecordingRow(existing);
+        return reply.code(204).send();
       }
-      reply.code(204);
+      if (existing.filePath) {
+        deleteRecordingFile(existing.filePath);
+      }
+      db.delete(recordings).where(eq(recordings.id, id)).run();
+      reply.code(204).send();
     },
   );
 

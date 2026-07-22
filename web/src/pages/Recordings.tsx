@@ -127,6 +127,22 @@ export function Recordings() {
     }
   }
 
+  // Same endpoint as handleCancel — DELETE /recordings/{id} hard-deletes
+  // (row + file, if any) once a recording is terminal instead of cancelling
+  // it, since there's nothing in-progress left to cancel. Split into its
+  // own handler purely for a confirm() message matching what actually
+  // happens (irreversible delete vs. stop-in-progress).
+  async function handleDelete(recording: Recording) {
+    if (!confirm(`Permanently delete recording #${recording.id}? This cannot be undone.`)) return;
+    setRowError(undefined);
+    try {
+      await api.delete(`/recordings/${recording.id}`);
+      refetch();
+    } catch (err) {
+      setRowError(err instanceof ApiError ? err.message : String(err));
+    }
+  }
+
   async function handleDownload(recording: Recording) {
     setRowError(undefined);
     try {
@@ -204,6 +220,9 @@ export function Recordings() {
                   )}
                   {recording.status === "completed" && recording.filePath && (
                     <button onClick={() => handleDownload(recording)}>Download</button>
+                  )}
+                  {(recording.status === "completed" || recording.status === "failed" || recording.status === "cancelled") && (
+                    <button onClick={() => handleDelete(recording)}>Delete</button>
                   )}
                 </td>
               </tr>

@@ -29,13 +29,14 @@ function fail(recordingId: number, reason: string): void {
     .run();
 }
 
-// A cancelled or failed-after-starting recording never gets file_path set,
-// but ffmpeg may have already written a partial file at outputPath — best
-// effort cleanup so aborted recordings don't silently leak disk space that
-// retention (which only ever looks at rows with file_path set) can't see.
-function deletePartialFile(outputPath: string): void {
+// Best-effort unlink, swallowing "already gone" so callers never need to
+// check existence first. Used both for a cancelled/failed-after-starting
+// recording's partial file below (never has file_path set, so retention
+// can't see it and clean it up itself) and, via DELETE /recordings/{id},
+// for a completed recording's real file when its row is hard-deleted.
+export function deleteRecordingFile(path: string): void {
   try {
-    unlinkSync(outputPath);
+    unlinkSync(path);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       throw err;
@@ -98,7 +99,7 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
         // DELETE /recordings/{id} already set status='cancelled'; nothing
         // to reconcile here even though the process technically "failed"
         // by exit code once SIGTERM'd.
-        deletePartialFile(outputPath);
+        deleteRecordingFile(outputPath);
         return;
       }
       if (code === 0) {
@@ -111,7 +112,7 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
           ? `ffmpeg terminated by signal ${signal}`
           : `ffmpeg exited with code ${code}: ${getStderrTail().trim().slice(-500)}`;
         fail(recording.id, reason);
-        deletePartialFile(outputPath);
+        deleteRecordingFile(outputPath);
       }
     });
   }

@@ -370,7 +370,7 @@ export async function providerRoutes(app: FastifyInstance) {
         }
         throw err;
       }
-      reply.code(204);
+      reply.code(204).send();
     },
   );
 }
