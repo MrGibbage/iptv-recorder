@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { providers, recordings } from "../db/schema.js";
-import { encrypt } from "../crypto.js";
+import { encrypt, decrypt } from "../crypto.js";
 import { requireApiKey } from "../auth.js";
 import { checkProviderAuth, checkXtreamAuth } from "../worker/xtreamAuth.js";
 
@@ -113,10 +113,25 @@ function redact(provider: typeof providers.$inferSelect) {
   return rest;
 }
 
+// GET /providers/{id}/connection is the deliberate, narrow exception to
+// redact() above — see its route registration below and PLAN.md
+// "Credentials Model" (2026-07-22 note) for why.
+const providerConnectionSchema = {
+  $id: "ProviderConnection",
+  type: "object",
+  properties: {
+    baseUrl: { type: "string" },
+    username: { type: "string" },
+    password: { type: "string" },
+  },
+  required: ["baseUrl", "username", "password"],
+} as const;
+
 export async function providerRoutes(app: FastifyInstance) {
   app.addSchema(providerSchema);
   app.addSchema(authCheckResultSchema);
   app.addSchema(providerStatusSchema);
+  app.addSchema(providerConnectionSchema);
 
   // onRequest, not preHandler: Fastify validates the body schema before
   // preHandler runs, so an unauthenticated request with a malformed body
@@ -243,6 +258,44 @@ export async function providerRoutes(app: FastifyInstance) {
         activeStreams,
         maxConcurrentStreams: provider.maxConcurrentStreams,
         auth: { ...auth, checkedAt: new Date().toISOString() },
+      };
+    },
+  );
+
+  // PLAN.md "Credentials Model" (2026-07-22 note) — the one deliberate
+  // exception to "credentials redacted in every response". iptv-scheduler
+  // (a separate service owning EPG ingestion) needs the raw
+  // username/password to hit each provider's Xtream EPG endpoint directly;
+  // iptv-recorder stays the single source of truth for credentials rather
+  // than a second copy or a third "account manager" service existing.
+  // Xtream URLs already embed credentials as standard practice (see
+  // ../worker/streamUrl.ts), so handing baseUrl/username/password back to
+  // an authenticated client isn't a new class of exposure — it's the same
+  // shape of information the client immediately turns into a URL itself.
+  // Gated by the same requireApiKey hook as every other route in this
+  // file — no separate admin tier, matching the "any valid client API key"
+  // precedent already documented in PLAN.md's Clients / API keys section.
+  app.get<{ Params: { id: string } }>(
+    "/providers/:id/connection",
+    {
+      schema: {
+        tags: ["providers"],
+        summary: "Get raw provider connection info",
+        description:
+          "Returns UNREDACTED credentials (baseUrl, username, password) for direct Xtream API access by trusted clients (e.g. iptv-scheduler's EPG ingestion). Every other /providers endpoint redacts credentials — this one deliberately does not; see PLAN.md Credentials Model.",
+        response: { 200: { $ref: "ProviderConnection#" }, 404: { $ref: "Error#" } },
+      },
+    },
+    async (request, reply) => {
+      const id = Number(request.params.id);
+      const [row] = db.select().from(providers).where(eq(providers.id, id)).all();
+      if (!row) {
+        return reply.code(404).send({ error: "provider not found" });
+      }
+      return {
+        baseUrl: row.baseUrl,
+        username: decrypt(row.usernameEncrypted),
+        password: decrypt(row.passwordEncrypted),
       };
     },
   );
