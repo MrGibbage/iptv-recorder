@@ -71,30 +71,73 @@ export const api = {
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
-// Downloads a file that requires auth (plain <a href> can't send the
-// Bearer header) by fetching it as a blob and triggering a save via a
-// throwaway <a>. Streaming in-page playback via <video src> would need the
-// key in the URL (query param) instead, which leaks it into server logs and
-// browser history — not worth that trade-off for v1, so download-only.
-export async function downloadFile(path: string, filename: string): Promise<void> {
-  const key = getStoredApiKey();
-  const headers: Record<string, string> = {};
-  if (key) {
-    headers.Authorization = `Bearer ${key}`;
-  }
-  const res = await fetch(`/api${path}`, { headers });
-  if (res.status === 401) {
-    clearStoredApiKey();
-    throw new ApiError(401, "API key is missing, invalid, or revoked");
-  }
-  if (!res.ok) {
-    throw new ApiError(res.status, res.statusText);
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
+export interface DownloadHandle {
+  promise: Promise<void>;
+  cancel: () => void;
+}
+
+// Downloads a file that requires auth (plain <a href> can't send the Bearer
+// header) by fetching it and triggering a save via a throwaway <a>.
+// Streaming in-page playback via <video src> would need the key in the URL
+// (query param) instead, which leaks it into server logs and browser
+// history — not worth that trade-off for v1, so download-only.
+//
+// Reads the response via its ReadableStream rather than the simpler
+// `res.blob()` for two reasons that matter once a recording is a
+// gigabyte-plus file: (1) `res.blob()` gives no way to report progress, so
+// a slow fetch (large file, slow network, a browser that's just slow to
+// buffer it) looks identical to a broken button — no feedback at all until
+// it either finishes or errors; (2) `res.blob()` can't be aborted cleanly
+// once in flight, so a misclick (or several) queues up multiple full-file
+// fetches with no way to stop them short of reloading the page. `onProgress`
+// and the returned `cancel()` fix both.
+export function downloadFile(
+  path: string,
+  filename: string,
+  onProgress?: (loadedBytes: number, totalBytes: number | null) => void,
+): DownloadHandle {
+  const controller = new AbortController();
+
+  const promise = (async () => {
+    const key = getStoredApiKey();
+    const headers: Record<string, string> = {};
+    if (key) {
+      headers.Authorization = `Bearer ${key}`;
+    }
+    const res = await fetch(`/api${path}`, { headers, signal: controller.signal });
+    if (res.status === 401) {
+      clearStoredApiKey();
+      throw new ApiError(401, "API key is missing, invalid, or revoked");
+    }
+    if (!res.ok) {
+      throw new ApiError(res.status, res.statusText);
+    }
+
+    const totalBytes = Number(res.headers.get("Content-Length")) || null;
+    const reader = res.body!.getReader();
+    const chunks: Uint8Array[] = [];
+    let loadedBytes = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loadedBytes += value.length;
+      onProgress?.(loadedBytes, totalBytes);
+    }
+
+    const blob = new Blob(chunks as BlobPart[]);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    // Appended (and removed after) rather than clicked while detached —
+    // some browsers won't reliably fire a synthetic click on an <a> that's
+    // never been in the document.
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  })();
+
+  return { promise, cancel: () => controller.abort() };
 }

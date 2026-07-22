@@ -10,6 +10,18 @@ function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString();
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+interface DownloadProgress {
+  loaded: number;
+  total: number | null;
+  cancel: () => void;
+}
+
 // <input type="datetime-local"> wants "YYYY-MM-DDTHH:mm" in local time, and
 // gives back the same — no timezone suffix, so it round-trips through
 // `new Date()` fine for this UI's purposes.
@@ -106,6 +118,7 @@ export function Recordings() {
 
   const [showSchedule, setShowSchedule] = useState(false);
   const [rowError, setRowError] = useState<string>();
+  const [downloads, setDownloads] = useState<Record<number, DownloadProgress>>({});
 
   const providerName = (id: number) => providers?.find((p) => p.id === id)?.name ?? `#${id}`;
 
@@ -143,14 +156,29 @@ export function Recordings() {
     }
   }
 
-  async function handleDownload(recording: Recording) {
+  function handleDownload(recording: Recording) {
     setRowError(undefined);
-    try {
-      const extension = recording.filePath?.split(".").pop() ?? "ts";
-      await downloadFile(`/recordings/${recording.id}/file`, `${recording.channelId}-${recording.id}.${extension}`);
-    } catch (err) {
-      setRowError(err instanceof ApiError ? err.message : String(err));
-    }
+    const extension = recording.filePath?.split(".").pop() ?? "ts";
+    const filename = `${recording.channelId}-${recording.id}.${extension}`;
+    const { promise, cancel } = downloadFile(`/recordings/${recording.id}/file`, filename, (loaded, total) => {
+      setDownloads((prev) => ({ ...prev, [recording.id]: { loaded, total, cancel } }));
+    });
+    setDownloads((prev) => ({ ...prev, [recording.id]: { loaded: 0, total: null, cancel } }));
+    promise
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return; // user cancelled — not an error
+        setRowError(err instanceof ApiError ? err.message : String(err));
+      })
+      .finally(() => {
+        setDownloads((prev) => {
+          const { [recording.id]: _removed, ...rest } = prev;
+          return rest;
+        });
+      });
+  }
+
+  function handleCancelDownload(recordingId: number) {
+    downloads[recordingId]?.cancel();
   }
 
   return (
@@ -218,9 +246,29 @@ export function Recordings() {
                   {(recording.status === "scheduled" || recording.status === "recording") && (
                     <button onClick={() => handleCancel(recording)}>Cancel</button>
                   )}
-                  {recording.status === "completed" && recording.filePath && (
-                    <button onClick={() => handleDownload(recording)}>Download</button>
-                  )}
+                  {recording.status === "completed" &&
+                    recording.filePath &&
+                    (downloads[recording.id] ? (
+                      <div className="download-progress">
+                        <div className="progress-bar">
+                          <div
+                            className="progress-bar-fill"
+                            style={{
+                              width: downloads[recording.id].total
+                                ? `${Math.min(100, (downloads[recording.id].loaded / downloads[recording.id].total!) * 100)}%`
+                                : "100%",
+                            }}
+                          />
+                        </div>
+                        <span>
+                          {formatBytes(downloads[recording.id].loaded)}
+                          {downloads[recording.id].total ? ` / ${formatBytes(downloads[recording.id].total!)}` : ""}
+                        </span>
+                        <button onClick={() => handleCancelDownload(recording.id)}>Cancel</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => handleDownload(recording)}>Download</button>
+                    ))}
                   {(recording.status === "completed" || recording.status === "failed" || recording.status === "cancelled") && (
                     <button onClick={() => handleDelete(recording)}>Delete</button>
                   )}
