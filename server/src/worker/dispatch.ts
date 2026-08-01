@@ -6,6 +6,7 @@ import { db } from "../db/client.js";
 import { providers, recordings } from "../db/schema.js";
 import { buildStreamUrl } from "./streamUrl.js";
 import { startRemux } from "./ffmpegRemux.js";
+import { StreamMappingWatcher } from "./streamMappingWatcher.js";
 import { ensureStorageDirectory, getStorageConfig } from "../db/settings.js";
 
 interface ActiveWorker {
@@ -15,6 +16,12 @@ interface ActiveWorker {
   // intentional (DELETE /recordings/{id}) and must not overwrite the
   // 'cancelled' status that handler already set with 'failed'.
   cancelled: boolean;
+  // Set when StreamMappingWatcher below catches ffmpeg silently dropping
+  // an expected video/audio stream (PLAN.md TODO2, 2026-07-24) — the
+  // 'close' handler uses this in place of the generic exit-code-based
+  // failure reason, since the process gets SIGTERM'd here and would
+  // otherwise just report "terminated by signal" with no indication of why.
+  abortReason?: string;
 }
 
 // recordingId -> in-flight ffmpeg process. Prevents re-dispatching a row a
@@ -93,12 +100,36 @@ export function dispatchDueRecordings(now: Date = new Date()): void {
     const worker: ActiveWorker = { process, outputPath, cancelled: false };
     activeWorkers.set(recording.id, worker);
 
+    // Catches a provider declaring a video/audio stream ffmpeg can detect
+    // but not capture (see streamMappingWatcher.ts) — settles within ~1-2s
+    // of ffmpeg starting, so a genuinely broken source stream is caught
+    // long before the full recording window elapses, rather than only
+    // discovered afterward as a silently video-only (or audio-only) file.
+    // A second, independent stderr listener alongside ffmpegRemux.ts's own
+    // tail-capturing one — Node streams support multiple listeners fine.
+    const mappingWatcher = new StreamMappingWatcher();
+    process.stderr.on("data", (chunk: Buffer) => {
+      if (worker.cancelled || worker.abortReason) {
+        return;
+      }
+      const result = mappingWatcher.feed(chunk.toString());
+      if (result.settled && result.missingTypes.length > 0) {
+        worker.abortReason = `provider stream is missing ${result.missingTypes.join("/")} — ffmpeg detected it declared but could not capture it (likely malformed at the source)`;
+        process.kill("SIGTERM");
+      }
+    });
+
     process.on("close", (code, signal) => {
       activeWorkers.delete(recording.id);
       if (worker.cancelled) {
         // DELETE /recordings/{id} already set status='cancelled'; nothing
         // to reconcile here even though the process technically "failed"
         // by exit code once SIGTERM'd.
+        deleteRecordingFile(outputPath);
+        return;
+      }
+      if (worker.abortReason) {
+        fail(recording.id, worker.abortReason);
         deleteRecordingFile(outputPath);
         return;
       }

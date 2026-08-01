@@ -1,6 +1,6 @@
-import { decrypt } from "../crypto.js";
 import { PROVIDER_STATUS_CHECK_TIMEOUT_MS } from "../config.js";
 import type { providers } from "../db/schema.js";
+import { resolveProviderConnection } from "./providerShape.js";
 
 export type AuthCheckResult = { ok: true } | { ok: false; error: string };
 
@@ -47,10 +47,38 @@ export async function checkXtreamAuth(credentials: {
   }
 }
 
+// M3U providers have no auth endpoint to speak of — a playlist URL either
+// serves a valid M3U document or it doesn't. Fetching the whole body (rather
+// than e.g. a Range request for the first bytes) is deliberate: playlists
+// this size are small enough (KBs-low MBs) that it's not worth the added
+// complexity for an occasional status/test check.
+export async function checkM3uPlaylist(playlistUrl: string): Promise<AuthCheckResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROVIDER_STATUS_CHECK_TIMEOUT_MS);
+  try {
+    const response = await fetch(playlistUrl, { signal: controller.signal });
+    if (!response.ok) {
+      return { ok: false, error: `provider responded with HTTP ${response.status}` };
+    }
+    const body = await response.text();
+    if (body.trimStart().startsWith("#EXTM3U")) {
+      return { ok: true };
+    }
+    return { ok: false, error: "response is not a valid M3U playlist" };
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      return { ok: false, error: "timed out contacting provider" };
+    }
+    return { ok: false, error: err instanceof Error ? err.message : "unknown error contacting provider" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function checkProviderAuth(provider: typeof providers.$inferSelect): Promise<AuthCheckResult> {
-  return checkXtreamAuth({
-    baseUrl: provider.baseUrl,
-    username: decrypt(provider.usernameEncrypted),
-    password: decrypt(provider.passwordEncrypted),
-  });
+  const connection = resolveProviderConnection(provider);
+  if (connection.type === "m3u") {
+    return checkM3uPlaylist(connection.playlistUrl);
+  }
+  return checkXtreamAuth(connection);
 }

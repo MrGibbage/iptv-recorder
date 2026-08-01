@@ -1,10 +1,17 @@
 // Hand-kept mirror of server/src/db/schema.ts response shapes — no shared
 // package between web/ and server/ yet, so these are duplicated by hand.
 
+export type ProviderType = "xtream" | "m3u";
+
 export interface Provider {
   id: number;
   name: string;
-  baseUrl: string;
+  type: ProviderType;
+  // Xtream only — always null for type = "m3u" (playlistUrl/epgUrl are
+  // credential-shaped like username/password, so like those they're never
+  // returned by /providers; see GET /providers/{id}/connection for the one
+  // deliberate exception).
+  baseUrl: string | null;
   maxConcurrentStreams: number;
   enabled: boolean;
   createdAt: string;
@@ -13,9 +20,16 @@ export interface Provider {
 
 export type RecordingStatus = "scheduled" | "recording" | "completed" | "failed" | "cancelled";
 
+export interface Profile {
+  id: number;
+  name: string;
+  createdAt: string;
+}
+
 export interface Recording {
   id: number;
   providerId: number;
+  profileId: number | null;
   channelId: string;
   recurringRuleId: number | null;
   startTime: string;
@@ -30,6 +44,7 @@ export interface Recording {
 export interface RecurringRule {
   id: number;
   providerId: number;
+  profileId: number | null;
   channelId: string;
   daysOfWeek: number;
   startMinuteOfDay: number;
@@ -52,6 +67,18 @@ export interface RetentionConfig {
   id: number;
   ttlDays: number | null;
   updatedAt: string;
+}
+
+export interface Client {
+  id: number;
+  name: string;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
+export interface ClientCreated extends Client {
+  apiKey: string;
+  apiUrl: string;
 }
 
 export interface AuthCheckResult {

@@ -82,6 +82,7 @@ function materializeIfDue(rule: RecurringRule, now: Date): void {
     db.insert(recordings)
       .values({
         providerId: rule.providerId,
+        profileId: rule.profileId,
         channelId: rule.channelId,
         recurringRuleId: rule.id,
         startTime: start,
@@ -100,6 +101,7 @@ function materializeIfDue(rule: RecurringRule, now: Date): void {
     db.insert(recordings)
       .values({
         providerId: rule.providerId,
+        profileId: rule.profileId,
         channelId: rule.channelId,
         recurringRuleId: rule.id,
         startTime: start,

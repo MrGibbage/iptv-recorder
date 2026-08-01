@@ -3,7 +3,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { and, eq, gte, isNotNull, isNull, lte } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { providers, recordings, recurringRules, recurringRuleSkips } from "../db/schema.js";
+import { profiles, providers, recordings, recurringRules, recurringRuleSkips } from "../db/schema.js";
 import { requireApiKey } from "../auth.js";
 import { checkHardReject } from "../hardReject.js";
 import { cancelActiveWorker, deleteRecordingFile } from "../worker/dispatch.js";
@@ -48,6 +48,7 @@ const createBodySchema = {
   required: ["providerId", "channelId"],
   properties: {
     providerId: { type: "integer" },
+    profileId: { type: "integer", description: "Optional attribution — see GET/POST /profiles." },
     channelId: { type: "string", minLength: 1 },
     startTime: { type: "string", minLength: 1 },
     endTime: { type: "string", minLength: 1 },
@@ -58,6 +59,7 @@ const createBodySchema = {
 
 type CreateBody = {
   providerId: number;
+  profileId?: number;
   channelId: string;
   startTime?: string;
   endTime?: string;
@@ -74,6 +76,7 @@ const listQuerySchema = {
   type: "object",
   properties: {
     providerId: { type: "integer" },
+    profileId: { type: "integer" },
     channelId: { type: "string" },
     status: { type: "string", enum: RECORDING_STATUSES },
     startAfter: { type: "string" },
@@ -86,6 +89,7 @@ const listQuerySchema = {
 
 type ListQuery = {
   providerId?: number;
+  profileId?: number;
   channelId?: string;
   status?: RecordingStatus;
   startAfter?: string;
@@ -98,6 +102,7 @@ const recurringListQuerySchema = {
   type: "object",
   properties: {
     providerId: { type: "integer" },
+    profileId: { type: "integer" },
     cancelled: { type: "boolean" },
   },
   additionalProperties: false,
@@ -105,6 +110,7 @@ const recurringListQuerySchema = {
 
 type RecurringListQuery = {
   providerId?: number;
+  profileId?: number;
   cancelled?: boolean;
 };
 
@@ -125,6 +131,7 @@ const recordingSchema = {
   properties: {
     id: { type: "integer" },
     providerId: { type: "integer" },
+    profileId: { type: "integer", nullable: true, description: "Optional attribution — see GET/POST /profiles." },
     channelId: { type: "string" },
     recurringRuleId: { type: "integer", nullable: true, description: "Null for a one-off recording; set for a materialized recurring occurrence." },
     startTime: { type: "string", format: "date-time" },
@@ -139,7 +146,7 @@ const recordingSchema = {
       description: "Only present when the request set includeProjected=true — false for every real, materialized row returned alongside projected ones.",
     },
   },
-  required: ["id", "providerId", "channelId", "recurringRuleId", "startTime", "endTime", "status", "filePath", "failureReason", "createdAt", "updatedAt"],
+  required: ["id", "providerId", "profileId", "channelId", "recurringRuleId", "startTime", "endTime", "status", "filePath", "failureReason", "createdAt", "updatedAt"],
 } as const;
 
 // GET /recordings?includeProjected=true — a computed-but-not-yet-
@@ -152,13 +159,14 @@ const projectedOccurrenceSchema = {
   properties: {
     recurringRuleId: { type: "integer" },
     providerId: { type: "integer" },
+    profileId: { type: "integer", nullable: true },
     channelId: { type: "string" },
     startTime: { type: "string", format: "date-time" },
     endTime: { type: "string", format: "date-time" },
     status: { type: "string", const: "scheduled" },
     projected: { type: "boolean", const: true },
   },
-  required: ["recurringRuleId", "providerId", "channelId", "startTime", "endTime", "status", "projected"],
+  required: ["recurringRuleId", "providerId", "profileId", "channelId", "startTime", "endTime", "status", "projected"],
 } as const;
 
 const recurringRuleSchema = {
@@ -167,6 +175,7 @@ const recurringRuleSchema = {
   properties: {
     id: { type: "integer" },
     providerId: { type: "integer" },
+    profileId: { type: "integer", nullable: true, description: "Optional attribution — see GET/POST /profiles. Inherited by every occurrence materialized from this rule." },
     channelId: { type: "string" },
     daysOfWeek: { type: "integer", description: "Bitmask: bit 0 = Monday .. bit 6 = Sunday." },
     startMinuteOfDay: { type: "integer", description: "Minutes since midnight, UTC (server is pinned to TZ=UTC; see index.ts's boot-time check)." },
@@ -177,7 +186,7 @@ const recurringRuleSchema = {
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
   },
-  required: ["id", "providerId", "channelId", "daysOfWeek", "startMinuteOfDay", "durationMinutes", "endDate", "maxOccurrences", "cancelledAt", "createdAt", "updatedAt"],
+  required: ["id", "providerId", "profileId", "channelId", "daysOfWeek", "startMinuteOfDay", "durationMinutes", "endDate", "maxOccurrences", "cancelledAt", "createdAt", "updatedAt"],
 } as const;
 
 // DELETE /recordings/recurring/{ruleId} — the cancelled rule plus how many
@@ -190,6 +199,7 @@ const recurringRuleCancelResultSchema = {
   properties: {
     id: { type: "integer" },
     providerId: { type: "integer" },
+    profileId: { type: "integer", nullable: true },
     channelId: { type: "string" },
     daysOfWeek: { type: "integer" },
     startMinuteOfDay: { type: "integer", description: "Minutes since midnight, UTC." },
@@ -202,7 +212,7 @@ const recurringRuleCancelResultSchema = {
     cancelledRecordings: { type: "integer", description: "Count of scheduled (not yet started) occurrences cancelled along with the rule." },
   },
   required: [
-    "id", "providerId", "channelId", "daysOfWeek", "startMinuteOfDay", "durationMinutes",
+    "id", "providerId", "profileId", "channelId", "daysOfWeek", "startMinuteOfDay", "durationMinutes",
     "endDate", "maxOccurrences", "cancelledAt", "createdAt", "updatedAt", "cancelledRecordings",
   ],
 } as const;
@@ -302,6 +312,13 @@ export async function recordingRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: "provider not found" });
       }
 
+      if (body.profileId !== undefined) {
+        const [profile] = db.select().from(profiles).where(eq(profiles.id, body.profileId)).all();
+        if (!profile) {
+          return reply.code(404).send({ error: "profile not found" });
+        }
+      }
+
       if (hasRecurrence) {
         const recurrence = body.recurrence!;
 
@@ -327,6 +344,7 @@ export async function recordingRoutes(app: FastifyInstance) {
           .insert(recurringRules)
           .values({
             providerId: body.providerId,
+            profileId: body.profileId ?? null,
             channelId: body.channelId,
             daysOfWeek: recurrence.daysOfWeek,
             startMinuteOfDay: recurrence.startMinuteOfDay,
@@ -361,6 +379,7 @@ export async function recordingRoutes(app: FastifyInstance) {
         .insert(recordings)
         .values({
           providerId: body.providerId,
+          profileId: body.profileId ?? null,
           channelId: body.channelId,
           startTime,
           endTime,
@@ -390,6 +409,7 @@ export async function recordingRoutes(app: FastifyInstance) {
       const conditions = [];
 
       if (q.providerId !== undefined) conditions.push(eq(recordings.providerId, q.providerId));
+      if (q.profileId !== undefined) conditions.push(eq(recordings.profileId, q.profileId));
       if (q.channelId !== undefined) conditions.push(eq(recordings.channelId, q.channelId));
       if (q.status !== undefined) conditions.push(eq(recordings.status, q.status));
       if (q.recurringRuleId !== undefined) conditions.push(eq(recordings.recurringRuleId, q.recurringRuleId));
@@ -431,6 +451,7 @@ export async function recordingRoutes(app: FastifyInstance) {
       if (q.status === undefined || q.status === "scheduled") {
         const ruleConditions = [isNull(recurringRules.cancelledAt)];
         if (q.providerId !== undefined) ruleConditions.push(eq(recurringRules.providerId, q.providerId));
+        if (q.profileId !== undefined) ruleConditions.push(eq(recurringRules.profileId, q.profileId));
         if (q.recurringRuleId !== undefined) ruleConditions.push(eq(recurringRules.id, q.recurringRuleId));
 
         const now = new Date();
@@ -531,6 +552,7 @@ export async function recordingRoutes(app: FastifyInstance) {
       const q = request.query;
       const conditions = [];
       if (q.providerId !== undefined) conditions.push(eq(recurringRules.providerId, q.providerId));
+      if (q.profileId !== undefined) conditions.push(eq(recurringRules.profileId, q.profileId));
       if (q.cancelled !== undefined) {
         conditions.push(q.cancelled ? isNotNull(recurringRules.cancelledAt) : isNull(recurringRules.cancelledAt));
       }

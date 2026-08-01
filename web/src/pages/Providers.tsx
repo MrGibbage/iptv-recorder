@@ -1,37 +1,48 @@
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
-import type { AuthCheckResult, Provider } from "../api/types";
+import type { AuthCheckResult, Provider, ProviderType } from "../api/types";
 
 interface ProviderFormValues {
   name: string;
+  type: ProviderType;
   baseUrl: string;
   username: string;
   password: string;
+  playlistUrl: string;
+  epgUrl: string;
   maxConcurrentStreams: string;
   enabled: boolean;
 }
 
 const emptyForm: ProviderFormValues = {
   name: "",
+  type: "xtream",
   baseUrl: "",
   username: "",
   password: "",
+  playlistUrl: "",
+  epgUrl: "",
   maxConcurrentStreams: "1",
   enabled: true,
 };
 
 type TestStatus = "untested" | "testing" | "passed" | "failed";
 
-// Shared by "add provider" and "edit provider" — on edit, username/password
-// are left blank and only sent if the admin actually types a new value
-// (the API never returns credentials to redisplay, so there's nothing to
-// prefill and blank must mean "leave unchanged", not "clear it").
+// Shared by "add provider" and "edit provider" — on edit, username/password/
+// playlistUrl are left blank and only sent if the admin actually types a new
+// value (the API never returns credentials to redisplay, so there's nothing
+// to prefill and blank must mean "leave unchanged", not "clear it").
+//
+// type is immutable once a provider exists (PUT /providers/{id} has no type
+// field at all — see server/src/routes/providers.ts), so the type selector
+// itself is add-only; edit mode just shows which type the provider already
+// is.
 //
 // The Test button + save-gating only apply when adding: on add there are no
 // stored credentials yet, so testing what's in the form is the only way to
-// catch a bad Xtream URL/username/password before creating the provider. On
-// edit the stored credentials are already known-good (or the admin isn't
+// catch a bad URL/username/password before creating the provider. On edit
+// the stored credentials are already known-good (or the admin isn't
 // touching them at all — blank means "keep current"), and GET
 // /providers/{id}/status already covers re-checking a saved provider live.
 function ProviderForm({
@@ -52,8 +63,8 @@ function ProviderForm({
   const [testMessage, setTestMessage] = useState<string>();
 
   // Any credential-relevant edit invalidates a prior "passed" result — a
-  // stale pass shouldn't gate Save open for URL/username/password the admin
-  // has since changed.
+  // stale pass shouldn't gate Save open for a URL/username/password the
+  // admin has since changed.
   function updateCredential(patch: Partial<ProviderFormValues>) {
     setValues({ ...values, ...patch });
     setTestStatus("untested");
@@ -64,11 +75,11 @@ function ProviderForm({
     setTestStatus("testing");
     setTestMessage(undefined);
     try {
-      const result = await api.post<AuthCheckResult>("/providers/test", {
-        baseUrl: values.baseUrl,
-        username: values.username,
-        password: values.password,
-      });
+      const body =
+        values.type === "xtream"
+          ? { type: "xtream", baseUrl: values.baseUrl, username: values.username, password: values.password }
+          : { type: "m3u", playlistUrl: values.playlistUrl };
+      const result = await api.post<AuthCheckResult>("/providers/test", body);
       setTestStatus(result.ok ? "passed" : "failed");
       setTestMessage(result.ok ? undefined : result.error);
     } catch (err) {
@@ -90,7 +101,10 @@ function ProviderForm({
     }
   }
 
-  const canTest = values.baseUrl.trim() !== "" && values.username.trim() !== "" && values.password.trim() !== "";
+  const canTest =
+    values.type === "xtream"
+      ? values.baseUrl.trim() !== "" && values.username.trim() !== "" && values.password.trim() !== ""
+      : values.playlistUrl.trim() !== "";
   const saveBlockedByTest = !isEdit && testStatus !== "passed";
 
   return (
@@ -99,27 +113,68 @@ function ProviderForm({
         Name
         <input value={values.name} onChange={(e) => setValues({ ...values, name: e.target.value })} required />
       </label>
-      <label>
-        Xtream base URL
-        <input
-          value={values.baseUrl}
-          onChange={(e) => updateCredential({ baseUrl: e.target.value })}
-          placeholder="http://provider.example.com:8080"
-          required
-        />
-      </label>
-      <label>
-        Username{isEdit && " (leave blank to keep current)"}
-        <input value={values.username} onChange={(e) => updateCredential({ username: e.target.value })} />
-      </label>
-      <label>
-        Password{isEdit && " (leave blank to keep current)"}
-        <input
-          type="password"
-          value={values.password}
-          onChange={(e) => updateCredential({ password: e.target.value })}
-        />
-      </label>
+      {isEdit ? (
+        <label>
+          Type
+          <input value={values.type === "xtream" ? "Xtream Codes" : "M3U playlist"} disabled />
+        </label>
+      ) : (
+        <label>
+          Type
+          <select
+            value={values.type}
+            onChange={(e) => updateCredential({ type: e.target.value as ProviderType })}
+          >
+            <option value="xtream">Xtream Codes</option>
+            <option value="m3u">M3U playlist</option>
+          </select>
+        </label>
+      )}
+      {values.type === "xtream" ? (
+        <>
+          <label>
+            Xtream base URL
+            <input
+              value={values.baseUrl}
+              onChange={(e) => updateCredential({ baseUrl: e.target.value })}
+              placeholder="http://provider.example.com:8080"
+              required
+            />
+          </label>
+          <label>
+            Username{isEdit && " (leave blank to keep current)"}
+            <input value={values.username} onChange={(e) => updateCredential({ username: e.target.value })} />
+          </label>
+          <label>
+            Password{isEdit && " (leave blank to keep current)"}
+            <input
+              type="password"
+              value={values.password}
+              onChange={(e) => updateCredential({ password: e.target.value })}
+            />
+          </label>
+        </>
+      ) : (
+        <>
+          <label>
+            Playlist URL{isEdit && " (leave blank to keep current)"}
+            <input
+              value={values.playlistUrl}
+              onChange={(e) => updateCredential({ playlistUrl: e.target.value })}
+              placeholder="http://provider.example.com/get.php?username=...&password=...&type=m3u_plus"
+              required={!isEdit}
+            />
+          </label>
+          <label>
+            EPG URL (optional){isEdit && " (leave blank to keep current)"}
+            <input
+              value={values.epgUrl}
+              onChange={(e) => setValues({ ...values, epgUrl: e.target.value })}
+              placeholder="http://provider.example.com/xmltv.php?username=...&password=..."
+            />
+          </label>
+        </>
+      )}
       <label>
         Max concurrent streams
         <input
@@ -167,14 +222,26 @@ export function Providers() {
   const [rowError, setRowError] = useState<string>();
 
   async function handleCreate(values: ProviderFormValues) {
-    await api.post("/providers", {
-      name: values.name,
-      baseUrl: values.baseUrl,
-      username: values.username,
-      password: values.password,
-      maxConcurrentStreams: Number(values.maxConcurrentStreams),
-      enabled: values.enabled,
-    });
+    const body =
+      values.type === "xtream"
+        ? {
+            name: values.name,
+            type: "xtream",
+            baseUrl: values.baseUrl,
+            username: values.username,
+            password: values.password,
+            maxConcurrentStreams: Number(values.maxConcurrentStreams),
+            enabled: values.enabled,
+          }
+        : {
+            name: values.name,
+            type: "m3u",
+            playlistUrl: values.playlistUrl,
+            ...(values.epgUrl.trim() !== "" ? { epgUrl: values.epgUrl } : {}),
+            maxConcurrentStreams: Number(values.maxConcurrentStreams),
+            enabled: values.enabled,
+          };
+    await api.post("/providers", body);
     setAdding(false);
     refetch();
   }
@@ -182,12 +249,17 @@ export function Providers() {
   async function handleUpdate(id: number, values: ProviderFormValues) {
     const body: Record<string, unknown> = {
       name: values.name,
-      baseUrl: values.baseUrl,
       maxConcurrentStreams: Number(values.maxConcurrentStreams),
       enabled: values.enabled,
     };
-    if (values.username.trim() !== "") body.username = values.username;
-    if (values.password.trim() !== "") body.password = values.password;
+    if (values.type === "xtream") {
+      body.baseUrl = values.baseUrl;
+      if (values.username.trim() !== "") body.username = values.username;
+      if (values.password.trim() !== "") body.password = values.password;
+    } else {
+      if (values.playlistUrl.trim() !== "") body.playlistUrl = values.playlistUrl;
+      if (values.epgUrl.trim() !== "") body.epgUrl = values.epgUrl;
+    }
     await api.put(`/providers/${id}`, body);
     setEditingId(null);
     refetch();
@@ -227,6 +299,7 @@ export function Providers() {
           <thead>
             <tr>
               <th>Name</th>
+              <th>Type</th>
               <th>Base URL</th>
               <th>Max streams</th>
               <th>Enabled</th>
@@ -237,14 +310,17 @@ export function Providers() {
             {providers.map((provider) =>
               editingId === provider.id ? (
                 <tr key={provider.id}>
-                  <td colSpan={5}>
+                  <td colSpan={6}>
                     <ProviderForm
                       isEdit
                       initial={{
                         name: provider.name,
-                        baseUrl: provider.baseUrl,
+                        type: provider.type,
+                        baseUrl: provider.baseUrl ?? "",
                         username: "",
                         password: "",
+                        playlistUrl: "",
+                        epgUrl: "",
                         maxConcurrentStreams: String(provider.maxConcurrentStreams),
                         enabled: provider.enabled,
                       }}
@@ -256,7 +332,8 @@ export function Providers() {
               ) : (
                 <tr key={provider.id}>
                   <td>{provider.name}</td>
-                  <td>{provider.baseUrl}</td>
+                  <td>{provider.type === "xtream" ? "Xtream Codes" : "M3U playlist"}</td>
+                  <td>{provider.baseUrl ?? "—"}</td>
                   <td>{provider.maxConcurrentStreams}</td>
                   <td>
                     <button onClick={() => handleToggleEnabled(provider)}>

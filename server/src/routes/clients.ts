@@ -39,8 +39,9 @@ const clientCreatedSchema = {
     createdAt: { type: "string", format: "date-time" },
     revokedAt: { type: "string", nullable: true, format: "date-time" },
     apiKey: { type: "string", description: "Shown exactly once — only its hash is stored, it cannot be recovered later." },
+    apiUrl: { type: "string", description: "This recorder's own base URL, derived from the request that created this client — for a client app to auto-configure its connection (e.g. QR-code pairing) instead of the operator typing it in by hand." },
   },
-  required: ["id", "name", "createdAt", "revokedAt", "apiKey"],
+  required: ["id", "name", "createdAt", "revokedAt", "apiKey", "apiUrl"],
 } as const;
 
 function hashKey(key: string): string {
@@ -90,9 +91,25 @@ export async function clientRoutes(app: FastifyInstance) {
         .returning()
         .all();
       reply.code(201);
+      // Derived from the request itself, not the browser's window.location
+      // (the web UI's own requests go through Vite's dev proxy, so its
+      // origin isn't the API's). request.protocol is trustProxy-aware
+      // (honors X-Forwarded-Proto), but request.headers.host is the raw
+      // header regardless of trustProxy — it never reflects
+      // X-Forwarded-Host, so it has to be read explicitly: prefer it when
+      // a proxy set it (Caddy's public hostname, no port needed), else
+      // fall back to the raw Host header (direct dev/LAN access, where the
+      // port matters since nothing is proxying it away). Verified live:
+      // without a proxy, apiUrl carries the real port
+      // (http://192.168.0.231:3300); with X-Forwarded-Proto/Host set
+      // (simulating Caddy), it correctly switches to the forwarded
+      // https://<public-host> instead.
+      const forwardedHost = request.headers["x-forwarded-host"];
+      const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers.host;
+      const apiUrl = `${request.protocol}://${host}`;
       // apiKey is shown exactly once, in this response — it is never
       // recoverable afterward, only the hash is stored.
-      return { ...redact(created), apiKey };
+      return { ...redact(created), apiKey, apiUrl };
     },
   );
 

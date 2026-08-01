@@ -12,21 +12,73 @@ export const clients = sqliteTable("clients", {
   revokedAt: integer("revoked_at", { mode: "timestamp" }),
 });
 
-// IPTV provider accounts (PLAN.md "Credentials Model").
-// username/password are encrypted at rest (see ../crypto.ts) — never
+// IPTV provider accounts (PLAN.md "Credentials Model"). Two shapes share
+// this table, discriminated by `type`:
+//   - xtream: baseUrl + username/password against a player_api.php panel.
+//   - m3u: a single playlist URL (credentials, if any, are typically baked
+//     into the URL itself — e.g. Apollo Group — rather than exposed as a
+//     separate username/password), plus an optional XMLTV epgUrl since M3U
+//     playlists carry no program data of their own (unlike Xtream, which
+//     bundles EPG behind the same panel credentials).
+// All secret-shaped fields are encrypted at rest (see ../crypto.ts) — never
 // selected out as plaintext by application code outside that module.
-export const providers = sqliteTable("providers", {
+// providersTypeShapeCheck below enforces that exactly the fields belonging
+// to a row's `type` are populated, not a mix of both.
+export const providers = sqliteTable(
+  "providers",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    name: text("name").notNull(),
+    type: text("type", { enum: ["xtream", "m3u"] })
+      .notNull()
+      .default("xtream"),
+    // Xtream-only — null when type = 'm3u'.
+    baseUrl: text("base_url"),
+    usernameEncrypted: text("username_encrypted"),
+    passwordEncrypted: text("password_encrypted"),
+    // M3U-only — null when type = 'xtream'. playlistUrl is the sole
+    // credential for M3U providers; epgUrl is optional (a provider may not
+    // offer a guide at all).
+    playlistUrlEncrypted: text("playlist_url_encrypted"),
+    epgUrlEncrypted: text("epg_url_encrypted"),
+    maxConcurrentStreams: integer("max_concurrent_streams").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    typeShapeCheck: check(
+      "providers_type_shape",
+      sql`
+        (${table.type} = 'xtream'
+          AND ${table.baseUrl} IS NOT NULL
+          AND ${table.usernameEncrypted} IS NOT NULL
+          AND ${table.passwordEncrypted} IS NOT NULL
+          AND ${table.playlistUrlEncrypted} IS NULL)
+        OR
+        (${table.type} = 'm3u'
+          AND ${table.playlistUrlEncrypted} IS NOT NULL
+          AND ${table.baseUrl} IS NULL
+          AND ${table.usernameEncrypted} IS NULL
+          AND ${table.passwordEncrypted} IS NULL)
+      `,
+    ),
+  }),
+);
+
+// Lightweight per-person attribution, Netflix-profile-style: a name only,
+// no password/secret — not a security boundary (every client key can still
+// see and act on every profile's recordings), just lets a shared household
+// tell whose recording something is. Providers stay unscoped (shared
+// subscription, same as a Netflix household shares one catalog).
+export const profiles = sqliteTable("profiles", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
-  baseUrl: text("base_url").notNull(),
-  usernameEncrypted: text("username_encrypted").notNull(),
-  passwordEncrypted: text("password_encrypted").notNull(),
-  maxConcurrentStreams: integer("max_concurrent_streams").notNull(),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   createdAt: integer("created_at", { mode: "timestamp" })
-    .notNull()
-    .$defaultFn(() => new Date()),
-  updatedAt: integer("updated_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
 });
@@ -42,6 +94,10 @@ export const recurringRules = sqliteTable("recurring_rules", {
   providerId: integer("provider_id")
     .notNull()
     .references(() => providers.id),
+  // Optional attribution — no ON DELETE behavior configured (SQLite default
+  // NO ACTION), same as provider_id below: deleting a profile that any rule
+  // still references is blocked (409), not cascaded (see DELETE /profiles/:id).
+  profileId: integer("profile_id").references(() => profiles.id),
   // Opaque provider-side channel identifier — the recorder has no channel/EPG
   // table of its own (PLAN.md Non-goals), so this is just a string handed
   // back by whichever client scheduled the rule.
@@ -112,6 +168,10 @@ export const recordings = sqliteTable(
     providerId: integer("provider_id")
       .notNull()
       .references(() => providers.id),
+    // Optional attribution, inherited from recurring_rules.profile_id when
+    // materialized from a rule (see scheduler/tick.ts). Same NO ACTION
+    // delete-blocking behavior as provider_id.
+    profileId: integer("profile_id").references(() => profiles.id),
     channelId: text("channel_id").notNull(),
     // Null for a one-off recording; set for a materialized recurring occurrence.
     recurringRuleId: integer("recurring_rule_id").references(() => recurringRules.id),

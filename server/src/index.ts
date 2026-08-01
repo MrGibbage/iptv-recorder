@@ -8,6 +8,7 @@ import { providerRoutes } from "./routes/providers.js";
 import { recordingRoutes } from "./routes/recordings.js";
 import { configRoutes } from "./routes/config.js";
 import { clientRoutes } from "./routes/clients.js";
+import { profileRoutes } from "./routes/profiles.js";
 import { startScheduler, stopScheduler } from "./scheduler/index.js";
 
 // recurring_rules.startMinuteOfDay has no per-rule timezone field (PLAN.md
@@ -23,7 +24,12 @@ if (serverTimeZone !== "UTC") {
   );
 }
 
-const app = Fastify({ logger: true });
+// trustProxy: honors X-Forwarded-Proto/X-Forwarded-Host once a reverse
+// proxy (Caddy, planned) sits in front of this server — inert today since
+// nothing is in front yet, so no forwarded headers exist to trust. Matters
+// for POST /clients's apiUrl (routes/clients.ts), derived from the request
+// so it's correct behind a proxy without a follow-up change later.
+const app = Fastify({ logger: true, trustProxy: true });
 
 // PLAN.md TODO4 — OpenAPI docs, generated from the same JSON-schema body/
 // querystring/response definitions each route already carries for
@@ -80,6 +86,7 @@ await app.register(providerRoutes);
 await app.register(recordingRoutes);
 await app.register(configRoutes);
 await app.register(clientRoutes);
+await app.register(profileRoutes);
 
 app.addHook("onClose", async () => {
   stopScheduler();

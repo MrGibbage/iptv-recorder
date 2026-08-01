@@ -7,6 +7,8 @@ import { Providers } from "./pages/Providers";
 import { Recordings } from "./pages/Recordings";
 import { RecurringRules } from "./pages/RecurringRules";
 import { Config } from "./pages/Config";
+import { Profiles } from "./pages/Profiles";
+import { Clients } from "./pages/Clients";
 
 function RequireApiKey({ children }: { children: ReactNode }) {
   const { apiKey } = useApiKey();
@@ -53,6 +55,22 @@ function App() {
           element={
             <RequireApiKey>
               <Config />
+            </RequireApiKey>
+          }
+        />
+        <Route
+          path="/profiles"
+          element={
+            <RequireApiKey>
+              <Profiles />
+            </RequireApiKey>
+          }
+        />
+        <Route
+          path="/clients"
+          element={
+            <RequireApiKey>
+              <Clients />
             </RequireApiKey>
           }
         />

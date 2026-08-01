@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
-import type { Provider, RecurringRule } from "../api/types";
+import type { Profile, Provider, RecurringRule } from "../api/types";
 
 // bit 0 = Monday .. bit 6 = Sunday (matches recurring_rules.daysOfWeek).
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -23,8 +23,17 @@ function timeToMinuteOfDay(time: string): number {
   return h * 60 + m;
 }
 
-function CreateForm({ providers, onCreated }: { providers: Provider[]; onCreated: () => void }) {
+function CreateForm({
+  providers,
+  profiles,
+  onCreated,
+}: {
+  providers: Provider[];
+  profiles: Profile[];
+  onCreated: () => void;
+}) {
   const [providerId, setProviderId] = useState(providers[0]?.id ?? 0);
+  const [profileId, setProfileId] = useState<number | "">("");
   const [channelId, setChannelId] = useState("");
   const [days, setDays] = useState<boolean[]>(new Array(7).fill(false));
   const [startTime, setStartTime] = useState("20:00");
@@ -52,6 +61,7 @@ function CreateForm({ providers, onCreated }: { providers: Provider[]; onCreated
     try {
       await api.post("/recordings", {
         providerId,
+        ...(profileId !== "" ? { profileId } : {}),
         channelId,
         recurrence: {
           daysOfWeek,
@@ -76,6 +86,17 @@ function CreateForm({ providers, onCreated }: { providers: Provider[]; onCreated
         Provider
         <select value={providerId} onChange={(e) => setProviderId(Number(e.target.value))}>
           {providers.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Profile (optional)
+        <select value={profileId} onChange={(e) => setProfileId(e.target.value === "" ? "" : Number(e.target.value))}>
+          <option value="">— none —</option>
+          {profiles.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
             </option>
@@ -153,12 +174,14 @@ function SkipForm({ ruleId, onSkipped }: { ruleId: number; onSkipped: () => void
 
 export function RecurringRules() {
   const { data: providers } = useAsync<Provider[]>(() => api.get("/providers"), []);
+  const { data: profiles } = useAsync<Profile[]>(() => api.get("/profiles"), []);
   const { data: rules, error, loading, refetch } = useAsync<RecurringRule[]>(() => api.get("/recordings/recurring"), []);
   const [showCreate, setShowCreate] = useState(false);
   const [skippingRuleId, setSkippingRuleId] = useState<number | null>(null);
   const [rowError, setRowError] = useState<string>();
 
   const providerName = (id: number) => providers?.find((p) => p.id === id)?.name ?? `#${id}`;
+  const profileName = (id: number | null) => (id === null ? "" : (profiles?.find((p) => p.id === id)?.name ?? `#${id}`));
 
   async function handleCancelRule(rule: RecurringRule) {
     if (!confirm(`Cancel recurring rule #${rule.id}? Future occurrences won't be generated.`)) return;
@@ -185,6 +208,7 @@ export function RecurringRules() {
             <tr>
               <th>ID</th>
               <th>Provider</th>
+              <th>Profile</th>
               <th>Channel</th>
               <th>Days</th>
               <th>Time</th>
@@ -198,6 +222,7 @@ export function RecurringRules() {
               <tr key={rule.id}>
                 <td>{rule.id}</td>
                 <td>{providerName(rule.providerId)}</td>
+                <td>{profileName(rule.profileId)}</td>
                 <td>{rule.channelId}</td>
                 <td>{daysOfWeekToLabel(rule.daysOfWeek)}</td>
                 <td>{minuteOfDayToTime(rule.startMinuteOfDay)}</td>
@@ -235,6 +260,7 @@ export function RecurringRules() {
           {providers && providers.length > 0 ? (
             <CreateForm
               providers={providers}
+              profiles={profiles ?? []}
               onCreated={() => {
                 setShowCreate(false);
                 refetch();

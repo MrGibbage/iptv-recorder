@@ -2,7 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError, downloadFile } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
-import type { Provider, Recording, RecordingStatus } from "../api/types";
+import type { Profile, Provider, Recording, RecordingStatus } from "../api/types";
 
 const STATUSES: RecordingStatus[] = ["scheduled", "recording", "completed", "failed", "cancelled"];
 
@@ -30,8 +30,17 @@ function toDatetimeLocal(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function ScheduleForm({ providers, onScheduled }: { providers: Provider[]; onScheduled: () => void }) {
+function ScheduleForm({
+  providers,
+  profiles,
+  onScheduled,
+}: {
+  providers: Provider[];
+  profiles: Profile[];
+  onScheduled: () => void;
+}) {
   const [providerId, setProviderId] = useState(providers[0]?.id ?? 0);
+  const [profileId, setProfileId] = useState<number | "">("");
   const [channelId, setChannelId] = useState("");
   const [startTime, setStartTime] = useState(() => toDatetimeLocal(new Date(Date.now() + 5 * 60_000)));
   const [endTime, setEndTime] = useState(() => toDatetimeLocal(new Date(Date.now() + 65 * 60_000)));
@@ -45,6 +54,7 @@ function ScheduleForm({ providers, onScheduled }: { providers: Provider[]; onSch
     try {
       await api.post("/recordings", {
         providerId,
+        ...(profileId !== "" ? { profileId } : {}),
         channelId,
         startTime: new Date(startTime).toISOString(),
         endTime: new Date(endTime).toISOString(),
@@ -64,6 +74,17 @@ function ScheduleForm({ providers, onScheduled }: { providers: Provider[]; onSch
         Provider
         <select value={providerId} onChange={(e) => setProviderId(Number(e.target.value))}>
           {providers.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Profile (optional)
+        <select value={profileId} onChange={(e) => setProfileId(e.target.value === "" ? "" : Number(e.target.value))}>
+          <option value="">— none —</option>
+          {profiles.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
             </option>
@@ -95,19 +116,22 @@ function ScheduleForm({ providers, onScheduled }: { providers: Provider[]; onSch
 export function Recordings() {
   const [searchParams, setSearchParams] = useSearchParams();
   const providerFilter = searchParams.get("providerId") ?? "";
+  const profileFilter = searchParams.get("profileId") ?? "";
   const statusFilter = searchParams.get("status") ?? "";
   const ruleFilter = searchParams.get("recurringRuleId") ?? "";
 
   const { data: providers } = useAsync<Provider[]>(() => api.get("/providers"), []);
+  const { data: profiles } = useAsync<Profile[]>(() => api.get("/profiles"), []);
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
     if (providerFilter) params.set("providerId", providerFilter);
+    if (profileFilter) params.set("profileId", profileFilter);
     if (statusFilter) params.set("status", statusFilter);
     if (ruleFilter) params.set("recurringRuleId", ruleFilter);
     const qs = params.toString();
     return qs ? `?${qs}` : "";
-  }, [providerFilter, statusFilter, ruleFilter]);
+  }, [providerFilter, profileFilter, statusFilter, ruleFilter]);
 
   const {
     data: recordings,
@@ -121,6 +145,7 @@ export function Recordings() {
   const [downloads, setDownloads] = useState<Record<number, DownloadProgress>>({});
 
   const providerName = (id: number) => providers?.find((p) => p.id === id)?.name ?? `#${id}`;
+  const profileName = (id: number | null) => (id === null ? "" : (profiles?.find((p) => p.id === id)?.name ?? `#${id}`));
 
   function setFilter(key: string, value: string) {
     const next = new URLSearchParams(searchParams);
@@ -198,6 +223,17 @@ export function Recordings() {
           </select>
         </label>
         <label>
+          Profile
+          <select value={profileFilter} onChange={(e) => setFilter("profileId", e.target.value)}>
+            <option value="">All</option>
+            {profiles?.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
           Status
           <select value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
             <option value="">All</option>
@@ -223,6 +259,7 @@ export function Recordings() {
             <tr>
               <th>ID</th>
               <th>Provider</th>
+              <th>Profile</th>
               <th>Channel</th>
               <th>Start</th>
               <th>End</th>
@@ -235,6 +272,7 @@ export function Recordings() {
               <tr key={recording.id}>
                 <td>{recording.id}</td>
                 <td>{providerName(recording.providerId)}</td>
+                <td>{profileName(recording.profileId)}</td>
                 <td>{recording.channelId}</td>
                 <td>{formatDateTime(recording.startTime)}</td>
                 <td>{formatDateTime(recording.endTime)}</td>
@@ -287,6 +325,7 @@ export function Recordings() {
           {providers && providers.length > 0 ? (
             <ScheduleForm
               providers={providers}
+              profiles={profiles ?? []}
               onScheduled={() => {
                 setShowSchedule(false);
                 refetch();

@@ -9,6 +9,7 @@ type RecurringRule = typeof recurringRules.$inferSelect;
 export type ProjectedOccurrence = {
   recurringRuleId: number;
   providerId: number;
+  profileId: number | null;
   channelId: string;
   startTime: Date;
   endTime: Date;
@@ -85,7 +86,14 @@ export function projectOccurrences(rule: RecurringRule, now: Date = new Date()):
       continue;
     }
 
-    results.push({ recurringRuleId: rule.id, providerId: rule.providerId, channelId: rule.channelId, startTime: start, endTime: end });
+    results.push({
+      recurringRuleId: rule.id,
+      providerId: rule.providerId,
+      profileId: rule.profileId,
+      channelId: rule.channelId,
+      startTime: start,
+      endTime: end,
+    });
     runningCount++;
   }
 

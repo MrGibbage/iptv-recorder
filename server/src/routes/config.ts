@@ -57,11 +57,26 @@ const retentionConfigSchema = {
   required: ["id", "ttlDays", "updatedAt"],
 } as const;
 
+const uiUrlSchema = {
+  $id: "UiUrl",
+  type: "object",
+  properties: {
+    url: { type: "string", description: "Where the Settings UI is hosted. Defaults to the local Vite dev server; override via the UI_URL env var (e.g. in docker-compose) once the UI is deployed somewhere else." },
+  },
+  required: ["url"],
+} as const;
+
+// Matches the Vite dev server default (web/vite.config.ts has no `server.port`
+// override) — so an unconfigured deployment reports exactly where the UI
+// already runs today.
+const DEFAULT_UI_URL = "http://localhost:5173";
+
 // PLAN.md "GET/PUT /config/storage" and "GET/PUT /config/retention" — both
 // backed by singleton config rows (server/src/db/settings.ts).
 export async function configRoutes(app: FastifyInstance) {
   app.addSchema(storageConfigSchema);
   app.addSchema(retentionConfigSchema);
+  app.addSchema(uiUrlSchema);
 
   app.addHook("onRequest", requireApiKey);
 
@@ -135,5 +150,16 @@ export async function configRoutes(app: FastifyInstance) {
         .all();
       return updated;
     },
+  );
+
+  // Read-only, env-backed rather than a DB singleton like storage/retention
+  // — this is a deployment-time fact (where the operator chose to host the
+  // UI container/process), not something the UI itself should be able to
+  // reconfigure. No env var set = current behavior (Vite dev default),
+  // unchanged for existing deployments.
+  app.get(
+    "/config/ui-url",
+    { schema: { tags: ["config"], summary: "Get the Settings UI's URL", response: { 200: { $ref: "UiUrl#" } } } },
+    async () => ({ url: process.env.UI_URL ?? DEFAULT_UI_URL }),
   );
 }

@@ -9,6 +9,8 @@ export function NavBar({ connected }: { connected: boolean }) {
           <NavLink to="/providers">Providers</NavLink>
           <NavLink to="/recordings">Recordings</NavLink>
           <NavLink to="/recurring-rules">Recurring Rules</NavLink>
+          <NavLink to="/profiles">Profiles</NavLink>
+          <NavLink to="/clients">Clients</NavLink>
           <NavLink to="/config">Config</NavLink>
         </div>
       )}
