@@ -30,8 +30,8 @@ function CreatedReveal({ created, onDismiss }: { created: ClientCreated; onDismi
       <h2>Client "{created.name}" created</h2>
       <p className="hint">
         This API key is shown exactly once — it cannot be recovered after you leave this page. Copy it, or scan the
-        QR code from the client app you're connecting. Pairing another device too? Come back and create a separate
-        client for it rather than reusing this QR — see the note above.
+        QR code from the client app you're connecting. Pairing another app too — even on this same device? Come back
+        and create a separate client for it rather than reusing this QR — see the note above.
       </p>
       <p>
         <code style={{ userSelect: "all" }}>{created.apiKey}</code>
@@ -84,6 +84,10 @@ export function Clients() {
   const { data: clients, error, loading, refetch } = useAsync<Client[]>(() => api.get("/clients"), []);
   const [created, setCreated] = useState<ClientCreated>();
   const [rowError, setRowError] = useState<string>();
+  const [showRevoked, setShowRevoked] = useState(false);
+
+  const revokedCount = clients?.filter((c) => c.revokedAt).length ?? 0;
+  const visibleClients = clients?.filter((c) => showRevoked || !c.revokedAt);
 
   async function handleRevoke(client: Client) {
     if (!confirm(`Revoke client "${client.name}"? Its API key will stop working immediately.`)) return;
@@ -101,10 +105,16 @@ export function Clients() {
       <h1>Clients</h1>
       <p className="hint">Apps that connect to this recorder (Lao, iptv-scheduler, iptv-web-player, …), each with its own API key.</p>
       <p className="hint">
-        Pair each device separately — create a new client and scan its own QR code, rather than reusing one device's
-        key on another. Every client sees the same recordings and profiles regardless of which key it uses (profiles
-        are just a label, not an access boundary — see the Profiles page), so there's no downside to each device
-        having its own key, and it means losing one device doesn't require revoking access for the others.
+        <strong>One key per client, always.</strong> A client is one app — not one device. If a single laptop or phone
+        runs two of these apps (say, Lao and iptv-web-player), each app still gets its own client and its own QR
+        code; never scan the same QR into two different apps, and never reuse one client's key for another.
+      </p>
+      <p className="hint">
+        <strong>Want two clients to show the same recordings anyway?</strong> That's what profiles are for, not
+        shared keys. Set both clients to use the same profile name when scheduling (see the Profiles page) — every
+        client already sees every profile's recordings regardless of which key it's using, so matching profile names
+        across clients is the correct, supported way to get a shared view. Each client keeps its own key either way,
+        which also means losing or revoking one client never affects the others.
       </p>
 
       {loading && <p>Loading…</p>}
@@ -112,6 +122,13 @@ export function Clients() {
       {rowError && <p className="error">{rowError}</p>}
 
       {clients && clients.length > 0 && (
+        <label className="checkbox-label">
+          <input type="checkbox" checked={showRevoked} onChange={(e) => setShowRevoked(e.target.checked)} />
+          Show revoked ({revokedCount})
+        </label>
+      )}
+
+      {visibleClients && visibleClients.length > 0 && (
         <table className="table">
           <thead>
             <tr>
@@ -123,7 +140,7 @@ export function Clients() {
             </tr>
           </thead>
           <tbody>
-            {clients.map((client) => (
+            {visibleClients.map((client) => (
               <tr key={client.id}>
                 <td>{client.id}</td>
                 <td>{client.name}</td>
@@ -141,6 +158,9 @@ export function Clients() {
       )}
 
       {clients && clients.length === 0 && !loading && <p>No clients yet.</p>}
+      {clients && clients.length > 0 && visibleClients && visibleClients.length === 0 && (
+        <p>All clients are revoked — check "Show revoked" above to see them.</p>
+      )}
 
       {created ? (
         <CreatedReveal created={created} onDismiss={() => { setCreated(undefined); refetch(); }} />
