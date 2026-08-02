@@ -16,3 +16,11 @@ export const PROVIDER_STATUS_CHECK_TIMEOUT_MS = 5_000;
 // rules run indefinitely by default") has no natural stopping point
 // otherwise.
 export const PROJECTION_HORIZON_DAYS = 30;
+
+// This server's own listening port — single source of truth so
+// routes/clients.ts's apiUrl derivation (POST /clients) can reconstruct the
+// real address even when a request arrived via an intermediary that
+// preserves the original Host header's port unchanged (e.g. Vite's dev
+// proxy fronting web/'s own UI) rather than trusting whatever port the
+// request nominally arrived on.
+export const PORT = Number(process.env.PORT ?? 3000);

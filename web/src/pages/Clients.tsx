@@ -30,7 +30,8 @@ function CreatedReveal({ created, onDismiss }: { created: ClientCreated; onDismi
       <h2>Client "{created.name}" created</h2>
       <p className="hint">
         This API key is shown exactly once — it cannot be recovered after you leave this page. Copy it, or scan the
-        QR code from the client app you're connecting.
+        QR code from the client app you're connecting. Pairing another device too? Come back and create a separate
+        client for it rather than reusing this QR — see the note above.
       </p>
       <p>
         <code style={{ userSelect: "all" }}>{created.apiKey}</code>
@@ -99,6 +100,12 @@ export function Clients() {
     <div className="page-content">
       <h1>Clients</h1>
       <p className="hint">Apps that connect to this recorder (Lao, iptv-scheduler, iptv-web-player, …), each with its own API key.</p>
+      <p className="hint">
+        Pair each device separately — create a new client and scan its own QR code, rather than reusing one device's
+        key on another. Every client sees the same recordings and profiles regardless of which key it uses (profiles
+        are just a label, not an access boundary — see the Profiles page), so there's no downside to each device
+        having its own key, and it means losing one device doesn't require revoking access for the others.
+      </p>
 
       {loading && <p>Loading…</p>}
       {error && <p className="error">{error}</p>}

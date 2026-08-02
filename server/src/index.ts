@@ -10,6 +10,7 @@ import { configRoutes } from "./routes/config.js";
 import { clientRoutes } from "./routes/clients.js";
 import { profileRoutes } from "./routes/profiles.js";
 import { startScheduler, stopScheduler } from "./scheduler/index.js";
+import { PORT } from "./config.js";
 
 // recurring_rules.startMinuteOfDay has no per-rule timezone field (PLAN.md
 // "single-instance, single-timezone deployment") — pinned to UTC via
@@ -92,9 +93,7 @@ app.addHook("onClose", async () => {
   stopScheduler();
 });
 
-const port = Number(process.env.PORT ?? 3000);
-
-app.listen({ port, host: "0.0.0.0" }).catch((err) => {
+app.listen({ port: PORT, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);
   process.exit(1);
 });

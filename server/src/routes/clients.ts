@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { clients } from "../db/schema.js";
 import { requireApiKey } from "../auth.js";
+import { PORT } from "../config.js";
 
 const createBodySchema = {
   type: "object",
@@ -94,18 +95,28 @@ export async function clientRoutes(app: FastifyInstance) {
       // Derived from the request itself, not the browser's window.location
       // (the web UI's own requests go through Vite's dev proxy, so its
       // origin isn't the API's). request.protocol is trustProxy-aware
-      // (honors X-Forwarded-Proto), but request.headers.host is the raw
-      // header regardless of trustProxy — it never reflects
-      // X-Forwarded-Host, so it has to be read explicitly: prefer it when
-      // a proxy set it (Caddy's public hostname, no port needed), else
-      // fall back to the raw Host header (direct dev/LAN access, where the
-      // port matters since nothing is proxying it away). Verified live:
-      // without a proxy, apiUrl carries the real port
-      // (http://192.168.0.231:3300); with X-Forwarded-Proto/Host set
-      // (simulating Caddy), it correctly switches to the forwarded
-      // https://<public-host> instead.
+      // (honors X-Forwarded-Proto).
+      //
+      // Host handling has two cases:
+      //  - A real reverse proxy set X-Forwarded-Host (Caddy, once fronted):
+      //    trust it as-is, no port override — that's the public-facing
+      //    name, typically on the standard 80/443 port.
+      //  - No forwarded host: the request either hit this server directly,
+      //    or came through an intermediary that preserves the original
+      //    Host header unchanged rather than rewriting it — Vite's dev
+      //    proxy fronting this same web UI does exactly that (confirmed
+      //    live: a client created by browsing the UI on :5174 got back
+      //    apiUrl: http://localhost:5174, since Fastify only ever sees the
+      //    browser's original :5174 Host with nothing to say otherwise).
+      //    Trusting the header's port blindly is therefore wrong; the
+      //    server always knows its own real port (PORT, ../config.js), so
+      //    the hostname is kept from the header but the port is always
+      //    overridden to it. Verified live: hitting :3300 directly, and
+      //    hitting :5174 through Vite's proxy (both localhost and the LAN
+      //    IP), all three now correctly resolve to the real :3300.
       const forwardedHost = request.headers["x-forwarded-host"];
-      const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers.host;
+      const forwarded = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
+      const host = forwarded ?? `${request.hostname}:${PORT}`;
       const apiUrl = `${request.protocol}://${host}`;
       // apiKey is shown exactly once, in this response — it is never
       // recoverable afterward, only the hash is stored.
