@@ -1,0 +1,79 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # docker-entrypoint.sh starts as root just long enough to chown the
+    # bind-mounted data dir, then uses gosu to drop to the unprivileged
+    # `node` user — both of those need capabilities cap_drop: ALL removes
+    # even from root (CHOWN for the chown, SETUID/SETGID for gosu's
+    # privilege drop; DAC_OVERRIDE/FOWNER cover edge cases on existing
+    # host-owned files, same set the postgres/gosu-based-image pattern uses).
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 100
+    environment:
+      - TZ=UTC
+      - PORT=3300
+      - DB_PATH=/app/server/data/db.sqlite
+      - RECORDINGS_DIR=/app/server/data/recordings
+      # Shown to other clients via GET /config/ui-url — see .env.example.
+      - UI_URL=${UI_URL:-http://localhost:${WEB_PORT:-8090}}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env — see .env.example (openssl rand -base64 32)}
+    volumes:
+      - ./data:/app/server/data
+    # Published directly (not just reachable via web's /api/ proxy):
+    # already-paired clients (Lao, Triton, iptv-scheduler) hold a QR-derived
+    # apiUrl pointing straight at this port on the host's LAN IP — that's
+    # how POST /clients has always built apiUrl (the server's own real
+    # port, not wherever the pairing request happened to arrive), so
+    # keeping it published is what keeps those existing pairings working
+    # across this migration. New clients paired through the web UI get an
+    # apiUrl reflecting whatever host/port they're reached on, same as
+    # before this port was also published.
+    #
+    # API_PORT (host side) defaults to matching the container's own PORT
+    # above, but is independently overridable — if you change it, the
+    # deriveApiUrl fallback in server/src/apiUrl.ts won't know, and you'll
+    # want GET/PUT /config/api-url (Config page) to correct it.
+    ports:
+      - "${API_PORT:-3300}:3300"
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 50
+    depends_on:
+      - server
+    ports:
+      - "${WEB_PORT:-8090}:8080"
+
+# Docker's default address pools (172.17-172.31.0.0/16, 192.168.0-240.0/20)
+# are already fully allocated on this host by other compose projects — an
+# unpinned network here fails outright with "all predefined address pools
+# have been fully subnetted". 172.16.0.0/16 is the one block those pools
+# don't cover and nothing else on this host claims.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.16.0.0/24

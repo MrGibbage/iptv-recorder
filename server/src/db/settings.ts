@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { db } from "./client.js";
-import { storageConfig, retentionConfig } from "./schema.js";
+import { storageConfig, retentionConfig, apiUrlConfig } from "./schema.js";
 
 const DEFAULT_MIN_FREE_BYTES = 1024 * 1024 * 1024; // 1 GiB
 
@@ -37,5 +37,14 @@ export function getRetentionConfig(): typeof retentionConfig.$inferSelect {
     return existing;
   }
   const [created] = db.insert(retentionConfig).values({ ttlDays: null }).returning().all();
+  return created;
+}
+
+export function getApiUrlConfig(): typeof apiUrlConfig.$inferSelect {
+  const [existing] = db.select().from(apiUrlConfig).all();
+  if (existing) {
+    return existing;
+  }
+  const [created] = db.insert(apiUrlConfig).values({ url: null }).returning().all();
   return created;
 }

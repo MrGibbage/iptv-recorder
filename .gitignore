@@ -8,3 +8,4 @@ data/
 *.db
 .DS_Store
 *.log
+data.bak-*/

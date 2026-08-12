@@ -69,9 +69,17 @@ export interface RetentionConfig {
   updatedAt: string;
 }
 
+export interface ApiUrlConfig {
+  id: number;
+  url: string | null;
+  suggestedDefault: string;
+  updatedAt: string;
+}
+
 export interface Client {
   id: number;
   name: string;
+  comment: string | null;
   createdAt: string;
   revokedAt: string | null;
 }
@@ -79,6 +87,10 @@ export interface Client {
 export interface ClientCreated extends Client {
   apiKey: string;
   apiUrl: string;
+}
+
+export interface SetupStatus {
+  needsSetup: boolean;
 }
 
 export interface AuthCheckResult {

@@ -1,5 +1,6 @@
 import "dotenv/config";
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { db } from "./db/client.js";
@@ -31,6 +32,15 @@ if (serverTimeZone !== "UTC") {
 // for POST /clients's apiUrl (routes/clients.ts), derived from the request
 // so it's correct behind a proxy without a follow-up change later.
 const app = Fastify({ logger: true, trustProxy: true });
+
+// Reflects any origin (TODO8, PLAN.md "Deployment") — the Config page's
+// "public API URL" Test button does a cross-origin browser fetch from the
+// Settings UI's own origin to a candidate API host:port, which the
+// same-origin policy blocks without this. Safe to leave unrestricted:
+// every route already requires its own bearer key regardless of origin
+// (requireApiKey, ./auth.ts) — CORS isn't this app's auth boundary, only
+// gates which origins a browser lets JS read the response from.
+await app.register(cors, { origin: true });
 
 // PLAN.md TODO4 — OpenAPI docs, generated from the same JSON-schema body/
 // querystring/response definitions each route already carries for

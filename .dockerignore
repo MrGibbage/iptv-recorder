@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+server/data
+*.sqlite
+*.sqlite3
+*.db
+.env
+.git

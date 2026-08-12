@@ -3,20 +3,29 @@ import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { clients } from "../db/schema.js";
-import { requireApiKey } from "../auth.js";
-import { PORT } from "../config.js";
+import { requireApiKey, requireApiKeyUnlessFirstClient, hasAnyClient } from "../auth.js";
+import { getApiUrlConfig } from "../db/settings.js";
+import { deriveApiUrl } from "../apiUrl.js";
+
+// Comment is a free-text label only, to tell apart clients that share an
+// app name (e.g. two "Lao" clients on different devices) — capped short
+// since it's meant to be a glanceable tag on the Clients screen, not a
+// description field.
+const COMMENT_MAX_LENGTH = 20;
 
 const createBodySchema = {
   type: "object",
   required: ["name"],
   properties: {
     name: { type: "string", minLength: 1 },
+    comment: { type: "string", maxLength: COMMENT_MAX_LENGTH, nullable: true },
   },
   additionalProperties: false,
 } as const;
 
 type CreateBody = {
   name: string;
+  comment?: string | null;
 };
 
 const clientSchema = {
@@ -25,10 +34,11 @@ const clientSchema = {
   properties: {
     id: { type: "integer" },
     name: { type: "string" },
+    comment: { type: "string", nullable: true },
     createdAt: { type: "string", format: "date-time" },
     revokedAt: { type: "string", nullable: true, format: "date-time" },
   },
-  required: ["id", "name", "createdAt", "revokedAt"],
+  required: ["id", "name", "comment", "createdAt", "revokedAt"],
 } as const;
 
 const clientCreatedSchema = {
@@ -37,12 +47,25 @@ const clientCreatedSchema = {
   properties: {
     id: { type: "integer" },
     name: { type: "string" },
+    comment: { type: "string", nullable: true },
     createdAt: { type: "string", format: "date-time" },
     revokedAt: { type: "string", nullable: true, format: "date-time" },
     apiKey: { type: "string", description: "Shown exactly once — only its hash is stored, it cannot be recovered later." },
     apiUrl: { type: "string", description: "This recorder's own base URL, derived from the request that created this client — for a client app to auto-configure its connection (e.g. QR-code pairing) instead of the operator typing it in by hand." },
   },
-  required: ["id", "name", "createdAt", "revokedAt", "apiKey", "apiUrl"],
+  required: ["id", "name", "comment", "createdAt", "revokedAt", "apiKey", "apiUrl"],
+} as const;
+
+const setupStatusSchema = {
+  $id: "SetupStatus",
+  type: "object",
+  properties: {
+    needsSetup: {
+      type: "boolean",
+      description: "True until the very first client is created — while true, POST /clients allows exactly one unauthenticated call, for the web UI's first-run setup screen.",
+    },
+  },
+  required: ["needsSetup"],
 } as const;
 
 function hashKey(key: string): string {
@@ -71,15 +94,34 @@ function redact(client: typeof clients.$inferSelect) {
 export async function clientRoutes(app: FastifyInstance) {
   app.addSchema(clientSchema);
   app.addSchema(clientCreatedSchema);
+  app.addSchema(setupStatusSchema);
 
-  app.addHook("onRequest", requireApiKey);
-
-  app.post<{ Body: CreateBody }>(
-    "/clients",
+  // Unauthenticated (see hasAnyClient, ../auth.js) — the web UI's Settings
+  // page checks this before deciding whether to show the first-run setup
+  // screen or the normal "paste an admin-issued key" form.
+  app.get(
+    "/setup-status",
     {
       schema: {
         tags: ["clients"],
+        summary: "Whether this recorder needs first-run setup",
+        response: { 200: { $ref: "SetupStatus#" } },
+      },
+    },
+    async () => ({ needsSetup: !hasAnyClient() }),
+  );
+
+  // No blanket onRequest hook — POST /clients needs different logic
+  // (bootstrap-allowed vs normal) than GET/DELETE, so auth is applied per
+  // route below instead.
+  app.post<{ Body: CreateBody }>(
+    "/clients",
+    {
+      preHandler: requireApiKeyUnlessFirstClient,
+      schema: {
+        tags: ["clients"],
         summary: "Issue a new client API key",
+        description: "Requires an existing client's key — except the very first call ever, which bootstraps the recorder (see GET /setup-status).",
         body: createBodySchema,
         response: { 201: { $ref: "ClientCreated#" } },
       },
@@ -88,36 +130,18 @@ export async function clientRoutes(app: FastifyInstance) {
       const apiKey = crypto.randomBytes(32).toString("base64url");
       const [created] = db
         .insert(clients)
-        .values({ name: request.body.name, apiKeyHash: hashKey(apiKey) })
+        .values({ name: request.body.name, comment: request.body.comment || null, apiKeyHash: hashKey(apiKey) })
         .returning()
         .all();
       reply.code(201);
-      // Derived from the request itself, not the browser's window.location
-      // (the web UI's own requests go through Vite's dev proxy, so its
-      // origin isn't the API's). request.protocol is trustProxy-aware
-      // (honors X-Forwarded-Proto).
-      //
-      // Host handling has two cases:
-      //  - A real reverse proxy set X-Forwarded-Host (Caddy, once fronted):
-      //    trust it as-is, no port override — that's the public-facing
-      //    name, typically on the standard 80/443 port.
-      //  - No forwarded host: the request either hit this server directly,
-      //    or came through an intermediary that preserves the original
-      //    Host header unchanged rather than rewriting it — Vite's dev
-      //    proxy fronting this same web UI does exactly that (confirmed
-      //    live: a client created by browsing the UI on :5174 got back
-      //    apiUrl: http://localhost:5174, since Fastify only ever sees the
-      //    browser's original :5174 Host with nothing to say otherwise).
-      //    Trusting the header's port blindly is therefore wrong; the
-      //    server always knows its own real port (PORT, ../config.js), so
-      //    the hostname is kept from the header but the port is always
-      //    overridden to it. Verified live: hitting :3300 directly, and
-      //    hitting :5174 through Vite's proxy (both localhost and the LAN
-      //    IP), all three now correctly resolve to the real :3300.
-      const forwardedHost = request.headers["x-forwarded-host"];
-      const forwarded = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
-      const host = forwarded ?? `${request.hostname}:${PORT}`;
-      const apiUrl = `${request.protocol}://${host}`;
+      // GET/PUT /config/api-url (TODO8, ../db/settings.ts) lets an operator
+      // override this outright — header-derivation (deriveApiUrl,
+      // ../apiUrl.ts) breaks down once a reverse proxy fronts a
+      // path-prefixed API rather than the API's own origin (found live
+      // during the 2026-08-02 Docker cutover, see PLAN.md "Deployment").
+      // null (the default) falls back to the request-derived guess exactly
+      // as before that setting existed.
+      const apiUrl = getApiUrlConfig().url ?? deriveApiUrl(request);
       // apiKey is shown exactly once, in this response — it is never
       // recoverable afterward, only the hash is stored.
       return { ...redact(created), apiKey, apiUrl };
@@ -127,6 +151,7 @@ export async function clientRoutes(app: FastifyInstance) {
   app.get(
     "/clients",
     {
+      preHandler: requireApiKey,
       schema: {
         tags: ["clients"],
         summary: "List clients",
@@ -141,6 +166,7 @@ export async function clientRoutes(app: FastifyInstance) {
   app.delete<{ Params: { id: string } }>(
     "/clients/:id",
     {
+      preHandler: requireApiKey,
       schema: {
         tags: ["clients"],
         summary: "Revoke a client's API key",

@@ -5,6 +5,11 @@ import { sql } from "drizzle-orm";
 export const clients = sqliteTable("clients", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
+  // Free-text label so a household can tell apart two clients issued with
+  // the same app name (e.g. two "Lao" clients on different devices) — not
+  // shown or used anywhere except the Clients screen. Length-capped at the
+  // API layer (routes/clients.ts), not here.
+  comment: text("comment"),
   apiKeyHash: text("api_key_hash").notNull(),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
@@ -227,6 +232,22 @@ export const storageConfig = sqliteTable("storage_config", {
 export const retentionConfig = sqliteTable("retention_config", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   ttlDays: integer("ttl_days"),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// Singleton config row (PLAN.md TODO8, 2026-08-02) — operator override for
+// the base URL POST /clients hands back as `apiUrl` for QR client pairing.
+// url null means "not set, use the request-derived default" (see
+// deriveApiUrl in routes/clients.ts) — the same nullable-disables shape
+// retentionConfig.ttlDays already uses. Needed because header-derivation
+// alone breaks down once a reverse proxy fronts a path-prefixed API rather
+// than the API's own origin (found live during the 2026-08-02 Docker
+// cutover — see PLAN.md "Deployment").
+export const apiUrlConfig = sqliteTable("api_url_config", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  url: text("url"),
   updatedAt: integer("updated_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),

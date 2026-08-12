@@ -16,6 +16,39 @@ function formatDateTime(iso: string): string {
 // (iptv-scheduler's RecorderSettings, iptv-web-player's RecorderConnection,
 // Lao's SettingsScreen), so a scanner on their end just needs to
 // JSON.parse() the decoded text into those fields.
+// Shows a value alongside a "Copy" button, since selecting-and-copying the
+// long apiKey (or the apiUrl, easy to fat-finger by hand) by hand is
+// error-prone — one wrong or missing character and the client app can't
+// connect at all.
+function CopyField({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API unavailable (e.g. non-HTTPS context) — the value is
+      // still selectable text in the <code> element below as a fallback.
+    }
+  }
+
+  return (
+    <div className="copy-field">
+      <p className="hint" style={{ margin: "0 0 4px" }}>
+        {label}
+      </p>
+      <div className="copy-row">
+        <code style={{ userSelect: "all" }}>{value}</code>
+        <button type="button" onClick={handleCopy}>
+          {copied ? "Copied!" : "Copy"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CreatedReveal({ created, onDismiss }: { created: ClientCreated; onDismiss: () => void }) {
   const [qrDataUrl, setQrDataUrl] = useState<string>();
 
@@ -33,9 +66,8 @@ function CreatedReveal({ created, onDismiss }: { created: ClientCreated; onDismi
         QR code from the client app you're connecting. Pairing another app too — even on this same device? Come back
         and create a separate client for it rather than reusing this QR — see the note above.
       </p>
-      <p>
-        <code style={{ userSelect: "all" }}>{created.apiKey}</code>
-      </p>
+      <CopyField label="API URL" value={created.apiUrl} />
+      <CopyField label="API key" value={created.apiKey} />
       {qrDataUrl && <img src={qrDataUrl} alt="QR code encoding this client's API URL and key" width={240} height={240} />}
       <div className="form-actions">
         <button onClick={onDismiss}>Done</button>
@@ -44,8 +76,11 @@ function CreatedReveal({ created, onDismiss }: { created: ClientCreated; onDismi
   );
 }
 
+const COMMENT_MAX_LENGTH = 20;
+
 function CreateForm({ onCreated }: { onCreated: (created: ClientCreated) => void }) {
   const [name, setName] = useState("");
+  const [comment, setComment] = useState("");
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
@@ -54,8 +89,12 @@ function CreateForm({ onCreated }: { onCreated: (created: ClientCreated) => void
     setError(undefined);
     setSaving(true);
     try {
-      const created = await api.post<ClientCreated>("/clients", { name: name.trim() });
+      const created = await api.post<ClientCreated>("/clients", {
+        name: name.trim(),
+        comment: comment.trim() || null,
+      });
       setName("");
+      setComment("");
       onCreated(created);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
@@ -69,6 +108,15 @@ function CreateForm({ onCreated }: { onCreated: (created: ClientCreated) => void
       <label>
         Name
         <input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+      </label>
+      <label>
+        Comment
+        <input
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          maxLength={COMMENT_MAX_LENGTH}
+          placeholder="e.g. Kitchen tablet"
+        />
       </label>
       {error && <p className="error">{error}</p>}
       <div className="form-actions">
@@ -134,6 +182,7 @@ export function Clients() {
             <tr>
               <th>ID</th>
               <th>Name</th>
+              <th>Comment</th>
               <th>Created</th>
               <th>Status</th>
               <th></th>
@@ -144,6 +193,7 @@ export function Clients() {
               <tr key={client.id}>
                 <td>{client.id}</td>
                 <td>{client.name}</td>
+                <td>{client.comment}</td>
                 <td>{formatDateTime(client.createdAt)}</td>
                 <td>
                   <span className={`badge ${client.revokedAt ? "badge-cancelled" : "badge-scheduled"}`}>

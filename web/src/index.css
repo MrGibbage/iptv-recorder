@@ -331,6 +331,22 @@ button:disabled {
   transition: width 0.2s ease;
 }
 
+.copy-field {
+  margin-bottom: 12px;
+}
+
+.copy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.copy-row code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .provider-test {
   display: flex;
   align-items: center;
